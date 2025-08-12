@@ -111,7 +111,8 @@ int main() {
         vkResetCommandBuffer(cmd, 0);
         vkBeginCommandBuffer(cmd, &begin_info);
 
-        /* These are utility functions that just automate format transitions for you, entirely optional */
+        /* These are utility functions that just automate
+           format transitions for you, entirely optional */
         lahar_window_attachment_transition(
             lahar,
             window,
@@ -132,7 +133,8 @@ int main() {
 
         vkEndCommandBuffer(cmd);
 
-        /* Similar story for both submission and present, fully optional, one can do it manually */
+        /* Similar story for both submission and present,
+           fully optional, one can do it manually */
         lahar_window_submit(lahar, window, cmd);
         lahar_window_present(lahar, window);
     }
