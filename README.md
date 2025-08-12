@@ -150,4 +150,4 @@ int main() {
 The authoritative source of Lahar's documentation is the header itself. See the preamble at the beginning for the overview, as well as compile-time configuration options. Every public function has doc comments.
 
 ## License
-Lahar is released under the MIT license
+Lahar is released under the zlib license
