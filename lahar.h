@@ -2922,6 +2922,10 @@ void lahar_deinit(Lahar* lahar) {
     for (size_t i = 0; i < lahar->window_count; i++) {
         LaharWindowState* state = &lahar->windows[i];
 
+        if (state->commands) {
+            lahar_free(state->commands);
+        }
+
         if (state->image_available) {
             for (size_t j = 0; j < state->max_in_flight; j++) {
                 if (state->image_available != VK_NULL_HANDLE && vkDestroySemaphore) {
@@ -3010,6 +3014,10 @@ void lahar_deinit(Lahar* lahar) {
     #if defined(LAHAR_USE_VMA)
     __lahar_deinit_vma(lahar);
     #endif
+
+    if (lahar->pool != VK_NULL_HANDLE && vkDestroyCommandPool) {
+        vkDestroyCommandPool(lahar->device, lahar->pool, lahar->vkalloc);
+    }
 
     if (lahar->device != VK_NULL_HANDLE && vkDestroyDevice) {
         vkDestroyDevice(lahar->device, lahar->vkalloc);
@@ -3659,22 +3667,21 @@ uint32_t __lahar_build_swapchain(Lahar* lahar) {
                     goto end;
                 }
             }
+        }
 
+        if (lahar->wantcommands) {
+            winstate->commands = (VkCommandBuffer*)lahar_malloc(winstate->swap_size * sizeof(VkCommandBuffer));
 
-            if (lahar->wantcommands) {
-                winstate->commands = (VkCommandBuffer*)lahar_malloc(winstate->swap_size * sizeof(VkCommandBuffer));
+            VkCommandBufferAllocateInfo buffer_alloc = {
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                .commandPool = lahar->pool,
+                .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                .commandBufferCount = winstate->swap_size
+            };
 
-                VkCommandBufferAllocateInfo buffer_alloc = {
-                    .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-                    .commandPool = lahar->pool,
-                    .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                    .commandBufferCount = winstate->swap_size
-                };
-
-                if ((lahar->vkresult = vkAllocateCommandBuffers(lahar->device, &buffer_alloc, winstate->commands)) != VK_SUCCESS) {
-                    err = LAHAR_ERR_VK_ERR;
-                    goto end;
-                }
+            if ((lahar->vkresult = vkAllocateCommandBuffers(lahar->device, &buffer_alloc, winstate->commands)) != VK_SUCCESS) {
+                err = LAHAR_ERR_VK_ERR;
+                goto end;
             }
         }
     }
