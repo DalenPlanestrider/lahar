@@ -1863,6 +1863,8 @@ extern PFN_vkAcquireNextImage2KHR vkAcquireNextImage2KHR;
 
 
 
+#endif //LAHAR_H
+
 
 #ifdef LAHAR_IMPLEMENTATION
 
@@ -6448,7 +6450,6 @@ static uint32_t lahar_load_device(Lahar* lahar, LaharLoaderFunc loadfn) {
 
 #endif // LAHAR_IMPLEMENTATION
 
-#endif //LAHAR_H
 
 
 
