@@ -193,21 +193,21 @@ Compile-Time Configuration options:
 
 
 #define LAHAR_ERR_SUCCESS 0                             // All good in the neighborhood
-#define LAHAR_ERR_ILLEGAL_PARAMS 0x01000001             // Wrong stuff for this function
-#define LAHAR_ERR_LOAD_FAILURE 0x01000002               // We couldn't load vulkan
-#define LAHAR_ERR_INVALID_CONFIGURATION 0x01000003      // You built a configuration that doesn't make sense
-#define LAHAR_ERR_MISSING_EXTENSION 0x01000004          // Missing an extension we needed
-#define LAHAR_ERR_NO_SUITABLE_DEVICE 0x01000005         // No device that fits our criteria
-#define LAHAR_ERR_DEPENDENCY_FAILED 0x01000006          // A third party lib failed
-#define LAHAR_ERR_ALLOC_FAILED 0x01000007               // We couldn't allocate
-#define LAHAR_ERR_INVALID_STATE 0x01000008              // The internal state was invalid, this is a bug!
-#define LAHAR_ERR_VK_ERR 0x01000009                     // A vulkan operation failed, see lahar.vkresult
-#define LAHAR_ERR_INVALID_WINDOW 0x0100000A             // This isn't a window known to lahar
-#define LAHAR_ERR_NO_COMMAND_BUFFER 0x0100000B          // You tried to present a frame without submitting any command buffers
-#define LAHAR_ERR_TIMEOUT 0x0100000C                    // A wait operation timed out          
-#define LAHAR_ERR_SWAPCHAIN_OUT_OF_DATE 0x0100000D      // The swapchain needs updated
-#define LAHAR_ERR_INVALID_FRAME_STATE 0x0100000E        // You did things out of order (must always be frame_start -> submit -> present)
-#define LAHAR_ERR_ATTACHMENT_WO_ALLOCATOR 0x0100000F    // You requested non-color attachments for a window, but provided no allocator  
+#define LAHAR_ERR_ILLEGAL_PARAMS 0x00020001             // Wrong stuff for this function
+#define LAHAR_ERR_LOAD_FAILURE 0x00020002               // We couldn't load vulkan
+#define LAHAR_ERR_INVALID_CONFIGURATION 0x00020003      // You built a configuration that doesn't make sense
+#define LAHAR_ERR_MISSING_EXTENSION 0x00020004          // Missing an extension we needed
+#define LAHAR_ERR_NO_SUITABLE_DEVICE 0x00020005         // No device that fits our criteria
+#define LAHAR_ERR_DEPENDENCY_FAILED 0x00020006          // A third party lib failed
+#define LAHAR_ERR_ALLOC_FAILED 0x00020007               // We couldn't allocate
+#define LAHAR_ERR_INVALID_STATE 0x00020008              // The internal state was invalid, this is a bug!
+#define LAHAR_ERR_VK_ERR 0x00020009                     // A vulkan operation failed, see lahar.vkresult
+#define LAHAR_ERR_INVALID_WINDOW 0x0002000A             // This isn't a window known to lahar
+#define LAHAR_ERR_NO_COMMAND_BUFFER 0x0002000B          // You tried to present a frame without submitting any command buffers
+#define LAHAR_ERR_TIMEOUT 0x0002000C                    // A wait operation timed out          
+#define LAHAR_ERR_SWAPCHAIN_OUT_OF_DATE 0x0002000D      // The swapchain needs updated
+#define LAHAR_ERR_INVALID_FRAME_STATE 0x0002000E        // You did things out of order (must always be frame_start -> submit -> present)
+#define LAHAR_ERR_ATTACHMENT_WO_ALLOCATOR 0x0002000F    // You requested non-color attachments for a window, but provided no allocator  
 
 struct Lahar;
 typedef struct Lahar Lahar;
