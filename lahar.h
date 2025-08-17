@@ -1864,7 +1864,6 @@ extern PFN_vkAcquireNextImage2KHR vkAcquireNextImage2KHR;
 
 
 
-#define LAHAR_IMPLEMENTATION
 #ifdef LAHAR_IMPLEMENTATION
 
 
