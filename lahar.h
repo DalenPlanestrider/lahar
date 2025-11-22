@@ -236,6 +236,9 @@ typedef enum LaharWindowProfile LaharWindowProfile;
 
 enum LaharFramePhase;
 typedef enum LaharFramePhase LaharFramePhase;
+
+enum LaharDebugLevel;
+typedef enum LaharDebugLevel LaharDebugLevel;
 #endif
 
 typedef PFN_vkVoidFunction (*LaharLoaderFunc)(Lahar*, const char*);
@@ -273,6 +276,15 @@ enum LaharFramePhase {
     LAHAR_FRAME_PHASE_BEGIN = 0,
     LAHAR_FRAME_PHASE_DRAW = 1,
     LAHAR_FRAME_PHASE_PRESENT = 2,
+};
+
+enum LaharDebugLevel {
+    LAHAR_DEBUG_UNSET = 0,
+    LAHAR_DEBUG_TRACE = 1,
+    LAHAR_DEBUG_INFO = 3,
+    LAHAR_DEBUG_WARNING = 4,
+    LAHAR_DEBUG_ERROR = 5,
+    LAHAR_DEBUG_DISABLED = 6
 };
 
 struct LaharAttachmentConfig {
@@ -320,8 +332,12 @@ struct LaharWindowState {
     VkSurfaceKHR surface;                   // The surface
     VkSwapchainKHR swapchain;               // The swapchain
     uint32_t swap_size;                     // The actual size of the swapchain
-    VkSemaphore* image_available;           // The sync semaphors for the images being available
-    VkSemaphore* render_finished;           // The sync semaphors for rendering being complete
+
+    uint32_t image_available_size;
+    VkSemaphore* image_available;           // The sync semaphores for the images being available
+    uint32_t render_finished_size;
+    VkSemaphore* render_finished;           // The sync semaphores for rendering being complete
+    uint32_t in_flight_size;
     VkFence* in_flight;                     // The fences for if this frame is in flight
 
     uint32_t flight_index;                  // The logical index of the frame in flight. Use this to index sync primitives, or anything "per frame in flight"
@@ -335,6 +351,7 @@ struct LaharWindowState {
 };
 
 struct Lahar {
+    LaharDebugLevel debug_level;
     LaharLibrary libvulkan;                                 // This is the platform's library handle
     VkResult vkresult;                                      // If any vulkan operation fails, the error code is saved here
     uint32_t vkversion;                                     // Pre-init, this is the requested version. Post-init, it's the selected version
@@ -429,6 +446,8 @@ uint32_t lahar_builder_allocator_set(Lahar* lahar, LaharAllocator* allocator);
 uint32_t lahar_vma_set_allocator(Lahar* lahar, VmaAllocator allocator);
 #endif
 
+/** Set Lahar's internal debug level */
+void lahar_builder_set_debug_level(Lahar* lahar, LaharDebugLevel level);
 
 /** Set the version of vulkan you'd like to load */
 void lahar_builder_set_vulkan_version(Lahar* lahar, uint32_t version);
@@ -1897,6 +1916,8 @@ extern PFN_vkAcquireNextImage2KHR vkAcquireNextImage2KHR;
     #define LAHAR_M_CHECK_CT 16
 #endif
 
+#include <stdarg.h>
+
 
 #ifdef __linux__
 #include <signal.h>
@@ -1953,6 +1974,73 @@ void* lahar_alloc_or_resize(void* existing, size_t targetsize) {
 #endif
 
 
+void __lahar_trace(Lahar* lahar, const char* msg, ...) {
+    if (lahar->debug_level <= LAHAR_DEBUG_TRACE) {
+        va_list ap;
+        va_start(ap, msg);
+
+        char buffer[4096];
+        vsnprintf(buffer, sizeof(buffer) - 1, msg, ap);
+
+        printf("[LHRTRACE] %s\n", buffer);
+
+        va_end(ap);
+    }
+}
+
+void __lahar_info(Lahar* lahar, const char* msg, ...) {
+    if (lahar->debug_level <= LAHAR_DEBUG_INFO) {
+        va_list ap;
+        va_start(ap, msg);
+
+        char buffer[4096];
+        vsnprintf(buffer, sizeof(buffer) - 1, msg, ap);
+
+        printf("[LHRINFO] %s\n", buffer);
+
+        va_end(ap);
+    }
+}
+
+void __lahar_warn(Lahar* lahar, const char* msg, ...) {
+    if (lahar->debug_level <= LAHAR_DEBUG_TRACE) {
+        va_list ap;
+        va_start(ap, msg);
+
+        char buffer[4096];
+        vsnprintf(buffer, sizeof(buffer) - 1, msg, ap);
+
+        printf("[LHRWARN] %s\n", buffer);
+
+        va_end(ap);
+    }
+}
+
+void __lahar_error(Lahar* lahar, const char* msg, ...) {
+    if (lahar->debug_level <= LAHAR_DEBUG_TRACE) {
+        va_list ap;
+        va_start(ap, msg);
+
+        char buffer[4096];
+        vsnprintf(buffer, sizeof(buffer) - 1, msg, ap);
+
+        printf("[LHRERROR] %s\n", buffer);
+
+        va_end(ap);
+    }
+}
+
+#ifndef LAHAR_NO_LOGGING
+    #define lahar_trace(...) __lahar_trace(__VA_ARGS__)
+    #define lahar_info(...) __lahar_info(__VA_ARGS__)
+    #define lahar_warn(...) __lahar_warn(__VA_ARGS__)
+    #define lahar_error(...) __lahar_error(__VA_ARGS__)
+#else
+    #define lahar_trace(...)
+    #define lahar_info(...)
+    #define lahar_warn(...)
+    #define lahar_error(...)
+#endif
 
 
 #if defined(_WIN32)
@@ -2165,7 +2253,7 @@ static PFN_vkVoidFunction __lahar_loader_dev(Lahar* lahar, const char* name) {
                 .vkGetDeviceBufferMemoryRequirements = vkGetDeviceBufferMemoryRequirements,
                 .vkGetDeviceImageMemoryRequirements = vkGetDeviceImageMemoryRequirements,
                 #endif
-                
+
                 #if defined(VK_KHR_external_memory_win32)
                 .vkGetMemoryWin32HandleKHR = vkGetMemoryWin32HandleKHR,
                 #endif
@@ -2619,6 +2707,12 @@ uint32_t lahar_builder_allocator_set(Lahar* lahar, LaharAllocator* allocator) {
     return LAHAR_ERR_SUCCESS;
 }
 
+void lahar_builder_set_debug_level(Lahar* lahar, LaharDebugLevel level) {
+    if (level >= LAHAR_DEBUG_TRACE && level <= LAHAR_DEBUG_DISABLED) {
+        lahar->debug_level = level;
+    }
+}
+
 void lahar_builder_set_vulkan_version(Lahar* lahar, uint32_t version) {
     if (lahar->instance == VK_NULL_HANDLE) {
         lahar->vkversion = version;
@@ -2916,6 +3010,8 @@ bool lahar_extension_has_device(Lahar* lahar, const char* extension) {
 // including entire failure to load
 
 void lahar_deinit(Lahar* lahar) {
+    lahar_trace(lahar, "Deiniting lahar");
+
     if (vkDeviceWaitIdle) {
         vkDeviceWaitIdle(lahar->device);
     }
@@ -2928,7 +3024,7 @@ void lahar_deinit(Lahar* lahar) {
         }
 
         if (state->image_available) {
-            for (size_t j = 0; j < state->max_in_flight; j++) {
+            for (size_t j = 0; j < state->image_available_size; j++) {
                 if (state->image_available != VK_NULL_HANDLE && vkDestroySemaphore) {
                     vkDestroySemaphore(lahar->device, state->image_available[j], lahar->vkalloc);
                 }
@@ -2938,7 +3034,7 @@ void lahar_deinit(Lahar* lahar) {
         }
 
         if (state->render_finished) {
-            for (size_t j = 0; j < state->max_in_flight; j++) {
+            for (size_t j = 0; j < state->render_finished_size; j++) {
                 if (state->render_finished != VK_NULL_HANDLE && vkDestroySemaphore) {
                     vkDestroySemaphore(lahar->device, state->render_finished[j], lahar->vkalloc);
                 }
@@ -2948,7 +3044,7 @@ void lahar_deinit(Lahar* lahar) {
         }
 
         if (state->in_flight) {
-            for (size_t j = 0; j < state->max_in_flight; j++) {
+            for (size_t j = 0; j < state->in_flight_size; j++) {
                 if (state->in_flight != VK_NULL_HANDLE && vkDestroyFence) {
                     vkDestroyFence(lahar->device, state->in_flight[j], lahar->vkalloc);
                 }
@@ -3173,6 +3269,10 @@ end:
 uint32_t __lahar_build_instance(Lahar* lahar) {
     uint32_t err = LAHAR_ERR_SUCCESS;
     lahar_temp_mcheck();
+
+    if (lahar->debug_level == LAHAR_DEBUG_UNSET) {
+        lahar->debug_level = LAHAR_DEBUG_ERROR;
+    }
 
     uint32_t ext_count;
     char** extensions = NULL;
@@ -3514,7 +3614,7 @@ uint32_t __lahar_build_swapchain(Lahar* lahar) {
         VkSurfaceCapabilitiesKHR surface_caps = {};
 
         if (winstate->desired_img_count == 0) {
-            winstate->desired_img_count = 2;
+            winstate->desired_img_count = winstate->max_in_flight;
         }
 
         if ((lahar->vkresult = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(lahar->physdev_info.physdev, winstate->surface, &surface_caps))) {
@@ -3586,6 +3686,8 @@ uint32_t __lahar_build_swapchain(Lahar* lahar) {
         }
 
         vkGetSwapchainImagesKHR(lahar->device, winstate->swapchain, &winstate->swap_size, NULL);
+
+        lahar_trace(lahar, "Window %zu had a swapchain of size %lu created", i, winstate->swap_size);
 
         for (size_t j = 0; j < winstate->attachment_count; j++) {
             size_t bytes = winstate->swap_size * sizeof(LaharAttachment);
@@ -3707,19 +3809,33 @@ uint32_t __lahar_build_sync(Lahar* lahar) {
     for (size_t i = 0; i < lahar->window_count; i++) {
         LaharWindowState* winstate = &lahar->windows[i];
 
-        winstate->image_available = (VkSemaphore*)lahar_malloc(winstate->max_in_flight * sizeof(VkSemaphore));
-        winstate->render_finished = (VkSemaphore*)lahar_malloc(winstate->max_in_flight * sizeof(VkSemaphore));
-        winstate->in_flight = (VkFence*)lahar_malloc(winstate->max_in_flight * sizeof(VkFence));
+        const uint32_t avail_ct = winstate->max_in_flight;
+        const uint32_t fin_ct = winstate->swap_size;
+        const uint32_t fence_ct = winstate->max_in_flight;
 
-        for (size_t j = 0; j < winstate->max_in_flight; j++) {
+        winstate->image_available = (VkSemaphore*)lahar_malloc(avail_ct * sizeof(VkSemaphore));
+        winstate->render_finished = (VkSemaphore*)lahar_malloc(fin_ct * sizeof(VkSemaphore));
+        winstate->in_flight = (VkFence*)lahar_malloc(fence_ct * sizeof(VkFence));
+
+        winstate->image_available_size = avail_ct;
+        winstate->render_finished_size = fin_ct;
+        winstate->in_flight_size = fence_ct;
+
+        lahar_trace(lahar, "Window %zu had %lu fences, %lu avail sems, and %lu finished sems created", i, fence_ct, avail_ct, fence_ct);
+
+        for (size_t j = 0; j < avail_ct; j++) {
             if ((lahar->vkresult = vkCreateSemaphore(lahar->device, &sem_info, lahar->vkalloc, &winstate->image_available[j])) != VK_SUCCESS) {
                 return LAHAR_ERR_VK_ERR;
             }
+        }
 
+        for (size_t j = 0; j < fin_ct; j++) {
             if ((lahar->vkresult = vkCreateSemaphore(lahar->device, &sem_info, lahar->vkalloc, &winstate->render_finished[j])) != VK_SUCCESS) {
                 return LAHAR_ERR_VK_ERR;
             }
+        }
 
+        for (size_t j = 0; j < fence_ct; j++) {
             if ((lahar->vkresult = vkCreateFence(lahar->device, &fence_info, lahar->vkalloc, &winstate->in_flight[j])) != VK_SUCCESS) {
                 return LAHAR_ERR_VK_ERR;
             }
@@ -3783,6 +3899,8 @@ uint32_t lahar_window_frame_begin(Lahar* lahar, LaharWindow* window) {
     VkResult res = vkAcquireNextImageKHR(lahar->device, winstate->swapchain, UINT64_MAX, winstate->image_available[winstate->flight_index], VK_NULL_HANDLE, &winstate->frame_index);
 
     if (res == VK_SUBOPTIMAL_KHR || res == VK_ERROR_OUT_OF_DATE_KHR) {
+        lahar_trace(lahar, "Attempted to begin frame, out of date");
+
         if (winstate->auto_recreate_swap) {
 
             uint32_t err;
@@ -3800,6 +3918,8 @@ uint32_t lahar_window_frame_begin(Lahar* lahar, LaharWindow* window) {
         lahar->vkresult = res;
         return LAHAR_ERR_VK_ERR;
     }
+
+    lahar_trace(lahar, "Frame began\n\tFlight index: %lu\n\tSwap frame index: %lu", winstate->flight_index, winstate->frame_index);
 
     vkResetFences(lahar->device, 1, &winstate->in_flight[winstate->flight_index]);
     winstate->frame_phase = LAHAR_FRAME_PHASE_DRAW;
@@ -3828,7 +3948,7 @@ uint32_t lahar_window_submit_all(Lahar* lahar, LaharWindow* window, VkCommandBuf
         .commandBufferCount = cmd_count,
         .pCommandBuffers = cmds,
         .signalSemaphoreCount= 1,
-        .pSignalSemaphores = &winstate->render_finished[winstate->flight_index],
+        .pSignalSemaphores = &winstate->render_finished[winstate->frame_index],
     };
 
     if ((lahar->vkresult = vkQueueSubmit(lahar->graphicsQueue, 1, &submit_info, winstate->in_flight[winstate->flight_index])) != VK_SUCCESS) {
@@ -3861,7 +3981,7 @@ uint32_t lahar_window_present(Lahar* lahar, LaharWindow* window) {
     else if (winstate->frame_phase == LAHAR_FRAME_PHASE_PRESENT) { // A render command buffer has been submitted
         present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
         present_info.waitSemaphoreCount = 1;
-        present_info.pWaitSemaphores = &winstate->render_finished[winstate->flight_index];
+        present_info.pWaitSemaphores = &winstate->render_finished[winstate->frame_index];
         present_info.swapchainCount = 1;
         present_info.pSwapchains = &winstate->swapchain;
         present_info.pImageIndices = &winstate->frame_index;
@@ -3882,7 +4002,6 @@ uint32_t lahar_window_present(Lahar* lahar, LaharWindow* window) {
 VkAccessFlags __lahar_access_mask(VkImageLayout layout) {
     switch (layout) {
         case VK_IMAGE_LAYOUT_UNDEFINED:
-            return 0;
         case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
             return 0; // or VK_ACCESS_MEMORY_READ_BIT on some drivers
         case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
