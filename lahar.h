@@ -351,6 +351,7 @@ struct LaharWindowState {
 };
 
 struct Lahar {
+    /* Configuration values */
     LaharDebugLevel debug_level;
     LaharLibrary libvulkan;                                 // This is the platform's library handle
     VkResult vkresult;                                      // If any vulkan operation fails, the error code is saved here
@@ -363,6 +364,7 @@ struct Lahar {
     PFN_vkDebugUtilsMessengerCallbackEXT debug_callback;    // One can set the debug messenger callback, if one desires
     void* user_data;                                        // A user supplied pointer
     LaharAllocator* gpu_allocator;                          // A user supplied (or VMA backed, if enabled) Vulkan allocator
+    void* device_create_pnext;                              // The pNext to pass to VkDeviceCreateInfo - used for enabling optional features
 
     char* device_name;                                      // An optional lock to the specific device name
     LaharDeviceScoreFunc score_func;                        // An optional custom scoring function to invoke on physical devices
@@ -506,6 +508,9 @@ uint32_t lahar_builder_device_set_scoring(Lahar* lahar, LaharDeviceScoreFunc sco
 void lahar_builder_request_command_buffers(Lahar* lahar);
 
 
+/** Set the pNext value that will be passed to VkDeviceCreateInfo.
+ * This is useful for enabling device features, such as dynamic rendering */
+void lahar_builder_set_device_create_pnext(Lahar* lahar, void* pnext);
 
 
 
@@ -2846,6 +2851,10 @@ void lahar_builder_request_command_buffers(Lahar* lahar) {
     lahar->wantcommands = true;
 }
 
+void lahar_builder_set_device_create_pnext(Lahar* lahar, void* pnext) {
+    lahar->device_create_pnext = pnext;
+}
+
 uint32_t lahar_builder_window_register_ex(Lahar* lahar, LaharWindow* window, const LaharWindowConfig* winconf) {
     if (!lahar || !window || !winconf || winconf->attachment_count == 0) { return LAHAR_ERR_ILLEGAL_PARAMS; }
 
@@ -3565,6 +3574,7 @@ uint32_t __lahar_build_device(Lahar* lahar) {
         .enabledExtensionCount = 1,
         .ppEnabledExtensionNames = &swap_ext_name,
         .pEnabledFeatures = &device_features,
+        .pNext = lahar->device_create_pnext,
     };
 
     if ((lahar->vkresult = vkCreateDevice(lahar->physdev_info.physdev, &create_info, lahar->vkalloc, &lahar->device)) != VK_SUCCESS) {
