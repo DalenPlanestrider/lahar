@@ -241,11 +241,11 @@ enum LaharDebugLevel;
 typedef enum LaharDebugLevel LaharDebugLevel;
 #endif
 
-typedef PFN_vkVoidFunction (*LaharLoaderFunc)(Lahar*, const char*);
+typedef PFN_vkVoidFunction (*LaharLoaderFunc)(const char*);
 typedef int64_t (*LaharDeviceScoreFunc)(const LaharDeviceInfo*);
-typedef uint32_t (*LaharSurfaceFormatChooseFunc)(Lahar*, LaharWindowState*, LaharDeviceInfo*, VkSurfaceFormatKHR* surface_fmt_out);
-typedef uint32_t (*LaharSurfacePresentModeChooseFunc)(Lahar*, LaharWindowState*, LaharDeviceInfo*, VkPresentModeKHR* present_mode_out);
-typedef uint32_t (*LaharSurfaceResizeFunc)(Lahar*, LaharWindow* window);
+typedef uint32_t (*LaharSurfaceFormatChooseFunc)(LaharWindowState*, LaharDeviceInfo*, VkSurfaceFormatKHR* surface_fmt_out);
+typedef uint32_t (*LaharSurfacePresentModeChooseFunc)(LaharWindowState*, LaharDeviceInfo*, VkPresentModeKHR* present_mode_out);
+typedef uint32_t (*LaharSurfaceResizeFunc)(LaharWindow* window);
 
 typedef uint32_t (*LaharAllocImageFunc)(void* self, Lahar* lahar, const VkImageCreateInfo* info, VkImage* img_out, LaharAllocation* alloc_out);
 typedef uint32_t (*LaharFreeImageFunc)(void* self, Lahar* lahar, VkImage* img, LaharAllocation* alloc);
@@ -420,69 +420,69 @@ const char* lahar_err_name(uint32_t code);
 /** Create an inhstance of the Lahar library
  * @param lahar The library to initialize
 */
-uint32_t lahar_init(Lahar* lahar);
+uint32_t lahar_init(void);
 
 /** Stick a user data pointer on the lahar instance */
-void lahar_set_user_data(Lahar* lahar, void* user_data);
+void lahar_set_user_data(void* user_data);
 
 /** Get the user data on the lahar instance */
-void* lahar_get_user_data(Lahar* lahar);
+void* lahar_get_user_data(void);
 
 /** Cleanup the entirety of lahar */
-void lahar_deinit(Lahar* lahar);
+void lahar_deinit(void);
 
 /** Configuration is done, setup and prepare for rendering */
-uint32_t lahar_build(Lahar* lahar);
+uint32_t lahar_build(void);
 
 /** Set a vulkan allocator for lahar to use. This is only
  * required if you want additional attachments beyond color,
  * and you haven't enabled the VMA support.
  */
-uint32_t lahar_builder_allocator_set(Lahar* lahar, LaharAllocator* allocator);
+uint32_t lahar_builder_allocator_set(LaharAllocator* allocator);
 
 #if defined(LAHAR_USE_VMA)
 /** If using VMA, instead of supplying a full LaharAllocator, you can
  * simply supply the VMA allocator. If you don't, lahar will create
  * one and store it in the Lahar instance.
  */
-uint32_t lahar_vma_set_allocator(Lahar* lahar, VmaAllocator allocator);
+uint32_t lahar_vma_set_allocator(VmaAllocator allocator);
 #endif
 
 /** Set Lahar's internal debug level */
-void lahar_builder_set_debug_level(Lahar* lahar, LaharDebugLevel level);
+void lahar_builder_set_debug_level(LaharDebugLevel level);
 
 /** Set the version of vulkan you'd like to load */
-void lahar_builder_set_vulkan_version(Lahar* lahar, uint32_t version);
+void lahar_builder_set_vulkan_version(uint32_t version);
 
 /** Inform lahar to load the validation layers, if available */ 
-void lahar_builder_request_validation_layers(Lahar* lahar);
+void lahar_builder_request_validation_layers(void);
 
 /** Add an extension to the list of required instance extensions
  * @param lahar The lahar instance
  * @param extensions The extension to add
  */
-uint32_t lahar_builder_extension_add_required_instance(Lahar* lahar, const char* extension);
+uint32_t lahar_builder_extension_add_required_instance(const char* extension);
 
 /** Add an extension to the list of required device extensions
  * @param lahar The lahar instance
  * @param extensions The extension to add
  */
-uint32_t lahar_builder_extension_add_required_device(Lahar* lahar, const char* extension);
+uint32_t lahar_builder_extension_add_required_device(const char* extension);
 
 /** Add an extension to the list of optional instance extensions
  * @param lahar The lahar instance
  * @param extensions The extension to add
  */
-uint32_t lahar_builder_extension_add_optional_instance(Lahar* lahar, const char* extension);
+uint32_t lahar_builder_extension_add_optional_instance(const char* extension);
 
 /** Add an extension to the list of optional device extensions
  * @param lahar The lahar instance
  * @param extensions The extension to add
  */
-uint32_t lahar_builder_extension_add_optional_device(Lahar* lahar, const char* extension);
+uint32_t lahar_builder_extension_add_optional_device(const char* extension);
 
 /** Set a debug callback for vulkan */
-void lahar_builder_set_debug_callback(Lahar* lahar, PFN_vkDebugUtilsMessengerCallbackEXT callback);
+void lahar_builder_set_debug_callback(PFN_vkDebugUtilsMessengerCallbackEXT callback);
 
 /** Set a specific device to use. Failure to find the device will
  * always cause finalize to return LAHAR_ERR_NO_SUITABLE_DEVICE
@@ -490,7 +490,7 @@ void lahar_builder_set_debug_callback(Lahar* lahar, PFN_vkDebugUtilsMessengerCal
  * @param lahar The lahar instance
  * @param name The device name
  */
-uint32_t lahar_builder_device_use(Lahar* lahar, const char* name);
+uint32_t lahar_builder_device_use(const char* name);
 
 /** Set a custom scoring metric for device. The callback will be invoked
  * for all devices. Any device with a negative score is ineligble. The
@@ -500,17 +500,17 @@ uint32_t lahar_builder_device_use(Lahar* lahar, const char* name);
  * @param lahar The lahar instance
  * @param scorefunc The scoring callback
  */
-uint32_t lahar_builder_device_set_scoring(Lahar* lahar, LaharDeviceScoreFunc scorefunc);
+uint32_t lahar_builder_device_set_scoring(LaharDeviceScoreFunc scorefunc);
 
 
 /** Tell lahar to create the utility command buffers in the windows.
  * Not needed if you plan to create your own */
-void lahar_builder_request_command_buffers(Lahar* lahar);
+void lahar_builder_request_command_buffers(void);
 
 
 /** Set the pNext value that will be passed to VkDeviceCreateInfo.
  * This is useful for enabling device features, such as dynamic rendering */
-void lahar_builder_set_device_create_pnext(Lahar* lahar, void* pnext);
+void lahar_builder_set_device_create_pnext(void* pnext);
 
 
 
@@ -527,7 +527,7 @@ void lahar_builder_set_device_create_pnext(Lahar* lahar, void* pnext);
  * @param window The window to register
  * @param winprofile The quick profile to use. For more control, see lahar_window_register_ex
 */
-uint32_t lahar_builder_window_register(Lahar* lahar, LaharWindow* window, LaharWindowProfile winprofile);
+uint32_t lahar_builder_window_register(LaharWindow* window, LaharWindowProfile winprofile);
 
 /** Register a window with lahar. When finalized, this window will have its surface/swapchain/attachments created. 
  * 
@@ -546,7 +546,7 @@ uint32_t lahar_builder_window_register(Lahar* lahar, LaharWindow* window, LaharW
  * @param winconfig The config
  * 
  */
-uint32_t lahar_builder_window_register_ex(Lahar* lahar, LaharWindow* window, const LaharWindowConfig* winconfig);
+uint32_t lahar_builder_window_register_ex(LaharWindow* window, const LaharWindowConfig* winconfig);
 
 
 
@@ -555,35 +555,35 @@ uint32_t lahar_builder_window_register_ex(Lahar* lahar, LaharWindow* window, con
  * @param lahar The lahar instance
  * @param extension The extension to check for
  */
-bool lahar_extension_has_instance(Lahar* lahar, const char* extension);
+bool lahar_extension_has_instance(const char* extension);
 
 /** Check if an optional device extension was loaded
  * @param lahar The lahar instance
  * @param extension The extension to check for
  */
-bool lahar_extension_has_device(Lahar* lahar, const char* extension);
+bool lahar_extension_has_device(const char* extension);
 
 /** Begin a frame, preparing for rendering. You only need to use this
  * if you plan on using lahar_window_submit, or lahar_window_present
  * 
  */
-uint32_t lahar_window_frame_begin(Lahar* lahar, LaharWindow* window);
+uint32_t lahar_window_frame_begin(LaharWindow* window);
 
 /** Submit a command buffer to a window. */
-uint32_t lahar_window_submit(Lahar* lahar, LaharWindow* window, VkCommandBuffer cmd);
+uint32_t lahar_window_submit(LaharWindow* window, VkCommandBuffer cmd);
 
 /** Submit multiple command buffers to a window */
-uint32_t lahar_window_submit_all(Lahar* lahar, LaharWindow* window, VkCommandBuffer* cmds, uint32_t cmd_count);
+uint32_t lahar_window_submit_all(LaharWindow* window, VkCommandBuffer* cmds, uint32_t cmd_count);
 
 /** Swap the window's visual buffers */
-uint32_t lahar_window_present(Lahar* lahar, LaharWindow* window);
+uint32_t lahar_window_present(LaharWindow* window);
 
 /** Resize a window's swapchain when the window changes size
  *
  * @param lahar The lahar instance
  * @param window The window to resize
  */
-uint32_t lahar_window_swapchain_resize(Lahar* lahar, LaharWindow* window);
+uint32_t lahar_window_swapchain_resize(LaharWindow* window);
 
 /** THIS IS ONE OF THE CUSTOM WINDOW FUNCTIONS.
  * 
@@ -599,7 +599,7 @@ uint32_t lahar_window_swapchain_resize(Lahar* lahar, LaharWindow* window);
  * 
  * @returns 0 for success, or any non-zero value to indicate failure, preferably a LAHAR_ERR_*
  */
-uint32_t lahar_window_surface_create(Lahar* lahar, LaharWindow* window, VkSurfaceKHR* surface);
+uint32_t lahar_window_surface_create(LaharWindow* window, VkSurfaceKHR* surface);
 
 /** THIS IS ONE OF THE CUSTOM WINDOW FUNCTIONS.
  * 
@@ -617,7 +617,7 @@ uint32_t lahar_window_surface_create(Lahar* lahar, LaharWindow* window, VkSurfac
  * 
  * @returns 0 for success, or any non-zero value to indicate failure, preferably a LAHAR_ERR_*
  */
-uint32_t lahar_window_get_size(Lahar* lahar, LaharWindow* window, uint32_t* width, uint32_t* height);
+uint32_t lahar_window_get_size(LaharWindow* window, uint32_t* width, uint32_t* height);
 
 /** THIS IS ONE OF THE CUSTOM WINDOW FUNCTIONS.
  * 
@@ -635,7 +635,7 @@ uint32_t lahar_window_get_size(Lahar* lahar, LaharWindow* window, uint32_t* widt
  * @returns 0 for success, or any non-zero value to indicate failure, preferably a LAHAR_ERR_*
  */
 
-uint32_t lahar_window_get_extensions(Lahar* lahar, LaharWindow* window, uint32_t* ext_count, const char** extensions);
+uint32_t lahar_window_get_extensions(LaharWindow* window, uint32_t* ext_count, const char** extensions);
 
 
 /** A utility to record the command to transition a the layout of a window's
@@ -648,13 +648,18 @@ uint32_t lahar_window_get_extensions(Lahar* lahar, LaharWindow* window, uint32_t
  * @param cmd The command buffer to record to
  * 
  */
-uint32_t lahar_window_attachment_transition(Lahar* lahar, LaharWindow* window, uint32_t attachment_index, VkImageLayout layout, VkCommandBuffer cmd);
+uint32_t lahar_window_attachment_transition(LaharWindow* window, uint32_t attachment_index, VkImageLayout layout, VkCommandBuffer cmd);
 
 /** Get the lahar window state struct for this window. NULL if not found. */
-LaharWindowState* lahar_window_state(Lahar* lahar, LaharWindow* window);
+LaharWindowState* lahar_window_state(LaharWindow* window);
 
 /** Wait until a particular window is inactive */
-uint32_t lahar_window_wait_inactive(Lahar* lahar, LaharWindow* window);
+uint32_t lahar_window_wait_inactive(LaharWindow* window);
+
+
+
+extern Lahar __lahar_instance;
+extern Lahar* lahar;
 
 
 #if defined(__cplusplus) && defined(LAHAR_C_LINKAGE)
@@ -1889,7 +1894,6 @@ extern PFN_vkAcquireNextImage2KHR vkAcquireNextImage2KHR;
 
 #endif //LAHAR_H
 
-
 #ifdef LAHAR_IMPLEMENTATION
 
 
@@ -1900,6 +1904,7 @@ extern PFN_vkAcquireNextImage2KHR vkAcquireNextImage2KHR;
 // #######################
 // ## LAHAR SOURCE CODE ##
 // #######################
+
 
 #ifndef lahar_malloc
     #define lahar_malloc(size) malloc(size)
@@ -1939,6 +1944,14 @@ extern PFN_vkAcquireNextImage2KHR vkAcquireNextImage2KHR;
 
 #endif
 
+#ifdef __cplusplus
+#define ZINIT {}
+#else
+#define ZINIT {0}
+#endif
+
+Lahar __lahar_instance = ZINIT;
+Lahar* lahar = &__lahar_instance;
 
 char* lahar_strdup(const char* str) {
     size_t len = strlen(str);
@@ -1979,7 +1992,7 @@ void* lahar_alloc_or_resize(void* existing, size_t targetsize) {
 #endif
 
 
-void __lahar_trace(Lahar* lahar, const char* msg, ...) {
+void __lahar_trace(const char* msg, ...) {
     if (lahar->debug_level <= LAHAR_DEBUG_TRACE) {
         va_list ap;
         va_start(ap, msg);
@@ -1993,7 +2006,7 @@ void __lahar_trace(Lahar* lahar, const char* msg, ...) {
     }
 }
 
-void __lahar_info(Lahar* lahar, const char* msg, ...) {
+void __lahar_info(const char* msg, ...) {
     if (lahar->debug_level <= LAHAR_DEBUG_INFO) {
         va_list ap;
         va_start(ap, msg);
@@ -2007,7 +2020,7 @@ void __lahar_info(Lahar* lahar, const char* msg, ...) {
     }
 }
 
-void __lahar_warn(Lahar* lahar, const char* msg, ...) {
+void __lahar_warn(const char* msg, ...) {
     if (lahar->debug_level <= LAHAR_DEBUG_TRACE) {
         va_list ap;
         va_start(ap, msg);
@@ -2021,7 +2034,7 @@ void __lahar_warn(Lahar* lahar, const char* msg, ...) {
     }
 }
 
-void __lahar_error(Lahar* lahar, const char* msg, ...) {
+void __lahar_error(const char* msg, ...) {
     if (lahar->debug_level <= LAHAR_DEBUG_TRACE) {
         va_list ap;
         va_start(ap, msg);
@@ -2050,7 +2063,7 @@ void __lahar_error(Lahar* lahar, const char* msg, ...) {
 
 #if defined(_WIN32)
     /** Open the handle to the vulkan lib */
-    static uint32_t __lahar_open_libvk(Lahar* lahar) {
+    static uint32_t __lahar_open_libvk() {
         HMODULE module = LoadLibraryA("vulkan-1.dll");
 
         lahar->libvulkan = module;
@@ -2058,14 +2071,14 @@ void __lahar_error(Lahar* lahar, const char* msg, ...) {
     }
 
     /** Loader callback for loading a function from the vulkan lib using native loading mechanisms */
-    static PFN_vkVoidFunction lahar_loader_sym(Lahar* lahar, const char* name) {
+    static PFN_vkVoidFunction lahar_loader_sym(const char* name) {
         return GetProcAddress(lahar->libvulkan, name);
     }
 #else
     #include <dlfcn.h>
 
     /** Open the handle to the vulkan lib */
-    static uint32_t __lahar_open_libvk(Lahar* lahar) {
+    static uint32_t __lahar_open_libvk() {
         void* module = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
 
         if (!module) {
@@ -2077,26 +2090,35 @@ void __lahar_error(Lahar* lahar, const char* msg, ...) {
     }
 
     /** Loader callback for loading a function from the vulkan lib using native loading mechanisms */
-    static PFN_vkVoidFunction lahar_loader_sym(Lahar* lahar, const char* name) {
+    static PFN_vkVoidFunction lahar_loader_sym(const char* name) {
         return (PFN_vkVoidFunction)dlsym(lahar->libvulkan, name);
     }
 
 #endif
 
 /** Loader callback for loading instance level vulkan functions */
-static PFN_vkVoidFunction __lahar_loader_inst(Lahar* lahar, const char* name) {
+static PFN_vkVoidFunction __lahar_loader_inst(const char* name) {
     return vkGetInstanceProcAddr(lahar->instance, name);
 }
 
 /** Loader callback for loading device level vulkan functions */
-static PFN_vkVoidFunction __lahar_loader_dev(Lahar* lahar, const char* name) {
+static PFN_vkVoidFunction __lahar_loader_dev(const char* name) {
     return vkGetDeviceProcAddr(lahar->device, name);
 }
 
+static VkBaseInStructure* __lahar_pnext_fetch(void* chain, VkStructureType type) {
+    VkBaseInStructure* base = (VkBaseInStructure*)chain;
 
+    while (base) {
+        if (base->sType == type) { return base; }
+        base = (VkBaseInStructure*)base->pNext;
+    }
+
+    return NULL;
+}
 
 #if defined(LAHAR_USE_GLFW)
-    uint32_t lahar_window_surface_create(Lahar* lahar, LaharWindow* window, VkSurfaceKHR* surface) {
+    uint32_t lahar_window_surface_create(LaharWindow* window, VkSurfaceKHR* surface) {
         if ((lahar->vkresult = glfwCreateWindowSurface(lahar->instance, window, lahar->vkalloc, surface)) != VK_SUCCESS) {
             return LAHAR_ERR_DEPENDENCY_FAILED;
         }
@@ -2104,7 +2126,7 @@ static PFN_vkVoidFunction __lahar_loader_dev(Lahar* lahar, const char* name) {
         return LAHAR_ERR_SUCCESS;
     }
 
-    uint32_t lahar_window_get_size(Lahar* lahar, LaharWindow* window, uint32_t* width, uint32_t* height) {
+    uint32_t lahar_window_get_size(LaharWindow* window, uint32_t* width, uint32_t* height) {
         int w, h;
         glfwGetFramebufferSize(window, &w, &h);
 
@@ -2114,7 +2136,7 @@ static PFN_vkVoidFunction __lahar_loader_dev(Lahar* lahar, const char* name) {
     }
 
 
-    uint32_t lahar_window_get_extensions(Lahar* lahar, LaharWindow* window, uint32_t* ext_count, const char** extensions) {
+    uint32_t lahar_window_get_extensions(LaharWindow* window, uint32_t* ext_count, const char** extensions) {
         const char** ext = glfwGetRequiredInstanceExtensions(ext_count);
 
         if (extensions) {
@@ -2129,7 +2151,7 @@ static PFN_vkVoidFunction __lahar_loader_dev(Lahar* lahar, const char* name) {
 #endif
 
 #if defined(LAHAR_USE_SDL2) || defined(LAHAR_USE_SDL3)
-    uint32_t lahar_window_surface_create(Lahar* lahar, LaharWindow* window, VkSurfaceKHR* surface) {
+    uint32_t lahar_window_surface_create(LaharWindow* window, VkSurfaceKHR* surface) {
         if (!SDL_Vulkan_CreateSurface(window, lahar->instance, surface)) {
             fprintf(stderr, "%s\n", SDL_GetError());
             return LAHAR_ERR_DEPENDENCY_FAILED;
@@ -2138,7 +2160,7 @@ static PFN_vkVoidFunction __lahar_loader_dev(Lahar* lahar, const char* name) {
         return LAHAR_ERR_SUCCESS;
     }
 
-    uint32_t lahar_window_get_size(Lahar* lahar, LaharWindow* window, uint32_t* width, uint32_t* height) {
+    uint32_t lahar_window_get_size(LaharWindow* window, uint32_t* width, uint32_t* height) {
         int w, h;
 
         SDL_Vulkan_GetDrawableSize(window, &w, &h);
@@ -2150,7 +2172,7 @@ static PFN_vkVoidFunction __lahar_loader_dev(Lahar* lahar, const char* name) {
 #endif
 
 #if defined(LAHAR_USE_SDL2)
-    uint32_t lahar_window_get_extensions(Lahar* lahar, LaharWindow* window, uint32_t* ext_count, const char** extensions) {
+    uint32_t lahar_window_get_extensions(LaharWindow* window, uint32_t* ext_count, const char** extensions) {
         if (!SDL_Vulkan_GetInstanceExtensions(window, ext_count, extensions)) {
             return LAHAR_ERR_DEPENDENCY_FAILED;
         }
@@ -2158,7 +2180,7 @@ static PFN_vkVoidFunction __lahar_loader_dev(Lahar* lahar, const char* name) {
         return LAHAR_ERR_SUCCESS;
     }
 #elif defined(LAHAR_USE_SDL3)
-    uint32_t lahar_window_get_extensions(Lahar* lahar, LaharWindow* window, uint32_t* ext_count, const char** extensions) {
+    uint32_t lahar_window_get_extensions(LaharWindow* window, uint32_t* ext_count, const char** extensions) {
         uint32_t count;
         char const* const* ext = SDL_Vulkan_GetInstanceExtensions(&count);
 
@@ -2181,8 +2203,8 @@ static PFN_vkVoidFunction __lahar_loader_dev(Lahar* lahar, const char* name) {
         if (!lahar->vma) { return LAHAR_ERR_INVALID_CONFIGURATION; }
         if (!info || !image || !allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
 
-        VmaAllocationCreateInfo alloc_create = {};
-        VmaAllocationInfo alloc_info = {};
+        VmaAllocationCreateInfo alloc_create = ZINIT;
+        VmaAllocationInfo alloc_info = ZINIT;
 
         if ((lahar->vkresult = vmaCreateImage(lahar->vma, info, &alloc_create, image, allocation, &alloc_info)) != VK_SUCCESS) {
             return LAHAR_ERR_DEPENDENCY_FAILED;
@@ -2206,14 +2228,14 @@ static PFN_vkVoidFunction __lahar_loader_dev(Lahar* lahar, const char* name) {
         .free_image = __lahar_vma_free_img
     };
 
-    uint32_t lahar_vma_set_allocator(Lahar* lahar, VmaAllocator allocator) {
-        if (!lahar || !allocator) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+    uint32_t lahar_vma_set_allocator(VmaAllocator allocator) {
+        if (!allocator) { return LAHAR_ERR_ILLEGAL_PARAMS; }
 
         lahar->vma = allocator;
         return LAHAR_ERR_SUCCESS;
     }
 
-    static uint32_t __lahar_init_vma(Lahar* lahar) {
+    static uint32_t __lahar_init_vma() {
         if (!lahar->gpu_allocator) {
             lahar->gpu_allocator = &__lahar_vma_adapter;
         }
@@ -2283,7 +2305,7 @@ static PFN_vkVoidFunction __lahar_loader_dev(Lahar* lahar, const char* name) {
         return LAHAR_ERR_SUCCESS;
     }
 
-    static void __lahar_deinit_vma(Lahar* lahar) {
+    static void __lahar_deinit_vma() {
         if (lahar->vma_created) {
             vmaDestroyAllocator(lahar->vma);
         }
@@ -2292,9 +2314,9 @@ static PFN_vkVoidFunction __lahar_loader_dev(Lahar* lahar, const char* name) {
 
 
 
-static uint32_t lahar_load_loader(Lahar* lahar, LaharLoaderFunc loadfn);
-static uint32_t lahar_load_instance(Lahar* lahar, LaharLoaderFunc loadfn);
-static uint32_t lahar_load_device(Lahar* lahar, LaharLoaderFunc loadfn);
+static uint32_t lahar_load_loader(LaharLoaderFunc loadfn);
+static uint32_t lahar_load_instance(LaharLoaderFunc loadfn);
+static uint32_t lahar_load_device(LaharLoaderFunc loadfn);
 
 
 static uint8_t __marena[LAHAR_M_ARENA_SIZE];
@@ -2391,7 +2413,7 @@ static int64_t __lahar_default_scorer(const LaharDeviceInfo* devinfo) {
     return score;
 }
 
-static uint32_t __lahar_default_surface_format_chooser(Lahar* lahar, LaharWindowState* window_state, LaharDeviceInfo* physdev_info, VkSurfaceFormatKHR* surface_fmt_out){
+static uint32_t __lahar_default_surface_format_chooser(LaharWindowState* window_state, LaharDeviceInfo* physdev_info, VkSurfaceFormatKHR* surface_fmt_out){
 
     for (size_t i = 0; i < physdev_info->surface_fmt_count; i++) {
         VkSurfaceFormatKHR* fmt = &physdev_info->surface_formats[i];
@@ -2406,7 +2428,7 @@ static uint32_t __lahar_default_surface_format_chooser(Lahar* lahar, LaharWindow
     return LAHAR_ERR_SUCCESS;
 }
 
-static uint32_t __lahar_default_surface_present_mode_chooser(Lahar* lahar, LaharWindowState* window_state, LaharDeviceInfo* physdev_info, VkPresentModeKHR* present_mode_out) {
+static uint32_t __lahar_default_surface_present_mode_chooser(LaharWindowState* window_state, LaharDeviceInfo* physdev_info, VkPresentModeKHR* present_mode_out) {
     uint32_t err = LAHAR_ERR_SUCCESS;
 
     for (size_t i = 0; i < physdev_info->present_mode_count; i++) {
@@ -2420,8 +2442,8 @@ static uint32_t __lahar_default_surface_present_mode_chooser(Lahar* lahar, Lahar
     return LAHAR_ERR_SUCCESS;
 }
 
-static uint32_t __lahar_default_resizer(Lahar* lahar, LaharWindow* window) {
-    LaharWindowState* winstate = lahar_window_state(lahar, window);
+static uint32_t __lahar_default_resizer(LaharWindow* window) {
+    LaharWindowState* winstate = lahar_window_state(window);
     if (!winstate) { return LAHAR_ERR_INVALID_WINDOW; }
 
     lahar_temp_mcheck();
@@ -2433,13 +2455,13 @@ static uint32_t __lahar_default_resizer(Lahar* lahar, LaharWindow* window) {
     uint32_t old_swap_size = winstate->swap_size;
     LaharSurfaceFormatChooseFunc choose_format = lahar->format_chooser ? lahar->format_chooser : __lahar_default_surface_format_chooser;
     LaharSurfacePresentModeChooseFunc choose_mode = lahar->present_chooser ? lahar->present_chooser : __lahar_default_surface_present_mode_chooser;
-    VkSurfaceCapabilitiesKHR surface_caps = {};
+    VkSurfaceCapabilitiesKHR surface_caps = ZINIT;
     LaharAttachmentConfig* color_conf = &winstate->attachment_configs[LAHAR_ATT_COLOR_INDEX];
     uint32_t queue_indices[2] = { lahar->physdev_info.graphics_queue_index, lahar->physdev_info.present_queue_index };
     uint32_t queue_index_count = queue_indices[0] == queue_indices[1] ? 0 : 2;
-    VkSwapchainCreateInfoKHR create_info = {};
+    VkSwapchainCreateInfoKHR create_info = ZINIT;
 
-    if ((err = lahar_window_wait_inactive(lahar, window))) {
+    if ((err = lahar_window_wait_inactive(window))) {
         goto end;
     }
 
@@ -2483,7 +2505,7 @@ static uint32_t __lahar_default_resizer(Lahar* lahar, LaharWindow* window) {
         goto end;
     }
 
-    if ((err = choose_format(lahar, winstate, &lahar->physdev_info, &winstate->surface_format))) {
+    if ((err = choose_format(winstate, &lahar->physdev_info, &winstate->surface_format))) {
         err = LAHAR_ERR_VK_ERR;
         goto end;
     }
@@ -2502,7 +2524,7 @@ static uint32_t __lahar_default_resizer(Lahar* lahar, LaharWindow* window) {
     create_info.clipped = VK_TRUE;
     create_info.oldSwapchain = VK_NULL_HANDLE;
 
-    if ((err = lahar_window_get_size(lahar, winstate->window, &create_info.imageExtent.width, &create_info.imageExtent.height))) {
+    if ((err = lahar_window_get_size(winstate->window, &create_info.imageExtent.width, &create_info.imageExtent.height))) {
         goto end;
     }
 
@@ -2520,7 +2542,7 @@ static uint32_t __lahar_default_resizer(Lahar* lahar, LaharWindow* window) {
         create_info.imageExtent.height = surface_caps.minImageExtent.height;
     }
 
-    if ((err = choose_mode(lahar, winstate, &lahar->physdev_info, &create_info.presentMode))) {
+    if ((err = choose_mode(winstate, &lahar->physdev_info, &create_info.presentMode))) {
         goto end;
     }
 
@@ -2657,18 +2679,16 @@ const char* lahar_err_name(uint32_t code) {
 
 
 
-void* lahar_get_user_data(Lahar* lahar) {
+void* lahar_get_user_data(void) {
     return lahar->user_data;
 }
 
-void lahar_set_user_data(Lahar* lahar, void* user_data) {
+void lahar_set_user_data(void* user_data) {
     lahar->user_data = user_data;
 }
 
 
-uint32_t lahar_init(Lahar* lahar) {
-    if (!lahar) { return LAHAR_ERR_ILLEGAL_PARAMS; }
-
+uint32_t lahar_init(void) {
     memset(lahar, 0, sizeof(*lahar));
 
     #if !defined(LAHAR_NO_AUTO_DEP)
@@ -2692,19 +2712,19 @@ uint32_t lahar_init(Lahar* lahar) {
 
     uint32_t err = LAHAR_ERR_SUCCESS;
     
-    if ((err = __lahar_open_libvk(lahar))) {
+    if ((err = __lahar_open_libvk())) {
         return err;
     }
 
-    if ((err = lahar_load_loader(lahar, lahar_loader_sym))) {
+    if ((err = lahar_load_loader(lahar_loader_sym))) {
         return err;
     }
 
     return LAHAR_ERR_SUCCESS;
 }
 
-uint32_t lahar_builder_allocator_set(Lahar* lahar, LaharAllocator* allocator) {
-    if (!lahar || !allocator || !allocator->alloc_image || !allocator->free_image) {
+uint32_t lahar_builder_allocator_set(LaharAllocator* allocator) {
+    if (!allocator || !allocator->alloc_image || !allocator->free_image) {
         return LAHAR_ERR_ILLEGAL_PARAMS;
     }
 
@@ -2712,24 +2732,24 @@ uint32_t lahar_builder_allocator_set(Lahar* lahar, LaharAllocator* allocator) {
     return LAHAR_ERR_SUCCESS;
 }
 
-void lahar_builder_set_debug_level(Lahar* lahar, LaharDebugLevel level) {
+void lahar_builder_set_debug_level(LaharDebugLevel level) {
     if (level >= LAHAR_DEBUG_TRACE && level <= LAHAR_DEBUG_DISABLED) {
         lahar->debug_level = level;
     }
 }
 
-void lahar_builder_set_vulkan_version(Lahar* lahar, uint32_t version) {
+void lahar_builder_set_vulkan_version(uint32_t version) {
     if (lahar->instance == VK_NULL_HANDLE) {
         lahar->vkversion = version;
     }
 }
 
-void lahar_builder_request_validation_layers(Lahar* lahar) {
+void lahar_builder_request_validation_layers(void) {
     lahar->wantvalidation = true;
 }
 
-uint32_t lahar_builder_extension_add_required_instance(Lahar* lahar, const char* extension) {
-    if (!lahar || !extension) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+uint32_t lahar_builder_extension_add_required_instance(const char* extension) {
+    if (!extension) { return LAHAR_ERR_ILLEGAL_PARAMS; }
 
     if (lahar->extensions.rie_count >= lahar->extensions.rie_cap) {
         lahar_vec_expand(lahar->extensions.req_inst_exts, lahar->extensions.rie_cap) else {
@@ -2745,8 +2765,8 @@ uint32_t lahar_builder_extension_add_required_instance(Lahar* lahar, const char*
     return LAHAR_ERR_SUCCESS;
 }
 
-uint32_t lahar_builder_extension_add_required_device(Lahar* lahar, const char* extension) {
-    if (!lahar || !extension) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+uint32_t lahar_builder_extension_add_required_device(const char* extension) {
+    if (!extension) { return LAHAR_ERR_ILLEGAL_PARAMS; }
 
     if (lahar->extensions.rde_count >= lahar->extensions.rde_cap) {
         lahar_vec_expand(lahar->extensions.req_dev_exts, lahar->extensions.rde_cap) else {
@@ -2762,8 +2782,8 @@ uint32_t lahar_builder_extension_add_required_device(Lahar* lahar, const char* e
     return LAHAR_ERR_SUCCESS;
 }
 
-uint32_t lahar_builder_extension_add_optional_instance(Lahar* lahar, const char* extension) {
-    if (!lahar || !extension) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+uint32_t lahar_builder_extension_add_optional_instance(const char* extension) {
+    if (!extension) { return LAHAR_ERR_ILLEGAL_PARAMS; }
 
     if (lahar->extensions.oie_count >= lahar->extensions.oie_cap) {
         size_t current_cap = lahar->extensions.oie_cap;
@@ -2794,8 +2814,8 @@ uint32_t lahar_builder_extension_add_optional_instance(Lahar* lahar, const char*
     return LAHAR_ERR_SUCCESS;
 }
 
-uint32_t lahar_builder_extension_add_optional_device(Lahar* lahar, const char* extension) {
-    if (!lahar || !extension) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+uint32_t lahar_builder_extension_add_optional_device(const char* extension) {
+    if (!extension) { return LAHAR_ERR_ILLEGAL_PARAMS; }
 
     if (lahar->extensions.ode_count >= lahar->extensions.ode_cap) {
         size_t current_cap = lahar->extensions.ode_cap;
@@ -2826,12 +2846,12 @@ uint32_t lahar_builder_extension_add_optional_device(Lahar* lahar, const char* e
     return LAHAR_ERR_SUCCESS;
 }
 
-void lahar_builder_set_debug_callback(Lahar *lahar, PFN_vkDebugUtilsMessengerCallbackEXT callback) {
+void lahar_builder_set_debug_callback(PFN_vkDebugUtilsMessengerCallbackEXT callback) {
     lahar->debug_callback = callback;
 }
 
-uint32_t lahar_builder_device_use(Lahar* lahar, const char* name) {
-    if (!lahar || !name || name[0] == '\0') { return LAHAR_ERR_ILLEGAL_PARAMS; }
+uint32_t lahar_builder_device_use(const char* name) {
+    if (!name || name[0] == '\0') { return LAHAR_ERR_ILLEGAL_PARAMS; }
 
     char* cpy = (char*)lahar_strdup(name);
     if (!cpy) { return LAHAR_ERR_ALLOC_FAILED; }
@@ -2840,23 +2860,23 @@ uint32_t lahar_builder_device_use(Lahar* lahar, const char* name) {
     return LAHAR_ERR_SUCCESS;
 }
 
-uint32_t lahar_builder_device_set_scoring(Lahar* lahar, LaharDeviceScoreFunc scorefunc) {
-    if (!lahar || !scorefunc) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+uint32_t lahar_builder_device_set_scoring(LaharDeviceScoreFunc scorefunc) {
+    if (!scorefunc) { return LAHAR_ERR_ILLEGAL_PARAMS; }
 
     lahar->score_func = scorefunc;
     return LAHAR_ERR_SUCCESS;
 }
 
-void lahar_builder_request_command_buffers(Lahar* lahar) {
+void lahar_builder_request_command_buffers(void) {
     lahar->wantcommands = true;
 }
 
-void lahar_builder_set_device_create_pnext(Lahar* lahar, void* pnext) {
+void lahar_builder_set_device_create_pnext(void* pnext) {
     lahar->device_create_pnext = pnext;
 }
 
-uint32_t lahar_builder_window_register_ex(Lahar* lahar, LaharWindow* window, const LaharWindowConfig* winconf) {
-    if (!lahar || !window || !winconf || winconf->attachment_count == 0) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+uint32_t lahar_builder_window_register_ex(LaharWindow* window, const LaharWindowConfig* winconf) {
+    if (!window || !winconf || winconf->attachment_count == 0) { return LAHAR_ERR_ILLEGAL_PARAMS; }
 
     uint32_t err = LAHAR_ERR_SUCCESS;
     LaharWindowState* window_state = NULL;
@@ -2873,7 +2893,7 @@ uint32_t lahar_builder_window_register_ex(Lahar* lahar, LaharWindow* window, con
     
     window_state->window = window;
 
-    if ((err = lahar_window_get_size(lahar, window, &window_state->width, &window_state->height))) {
+    if ((err = lahar_window_get_size(window, &window_state->width, &window_state->height))) {
         goto end;
     }
 
@@ -2899,27 +2919,27 @@ end:
     return err;
 }
 
-uint32_t lahar_builder_window_register(Lahar* lahar, LaharWindow* window, LaharWindowProfile winprof) {
-    if (!lahar || !window) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+uint32_t lahar_builder_window_register(LaharWindow* window, LaharWindowProfile winprof) {
+    if (!window) { return LAHAR_ERR_ILLEGAL_PARAMS; }
 
     switch(winprof) {
         case LAHAR_WINPROF_COLOR: {
             // Attachment 0 is ignored anyway, but must be specified for color
-            LaharAttachmentConfig attachments = {0};
+            LaharAttachmentConfig attachments = ZINIT;
 
             LaharWindowConfig conf = {
                 .attachment_count = 1,
                 .attachments = &attachments
             };
 
-            return lahar_builder_window_register_ex(lahar, window, &conf);
+            return lahar_builder_window_register_ex(window, &conf);
 
         } break;
 
         case LAHAR_WINPROF_COLOR_DEPTH: {
             // Attachment 0 is ignored anyway, but must be specified for color
             LaharAttachmentConfig attachments[] = {
-                {0},
+                ZINIT,
                 {
                     .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                     .description = {
@@ -2964,7 +2984,7 @@ uint32_t lahar_builder_window_register(Lahar* lahar, LaharWindow* window, LaharW
                 .attachments = attachments
             };
 
-            return lahar_builder_window_register_ex(lahar, window, &conf);
+            return lahar_builder_window_register_ex(window, &conf);
         } break;
 
         default:
@@ -2975,8 +2995,8 @@ uint32_t lahar_builder_window_register(Lahar* lahar, LaharWindow* window, LaharW
 }
 
 
-bool lahar_extension_has_instance(Lahar* lahar, const char* extension) {
-    if (!lahar || !extension) { return false; }
+bool lahar_extension_has_instance(const char* extension) {
+    if (!extension) { return false; }
 
     for (size_t i = 0; i < lahar->extensions.oie_count; i++) {
         if (strcmp(extension, lahar->extensions.opt_inst_exts[i]) == 0) {
@@ -2993,8 +3013,8 @@ bool lahar_extension_has_instance(Lahar* lahar, const char* extension) {
     return false;
 }
 
-bool lahar_extension_has_device(Lahar* lahar, const char* extension) {
-    if (!lahar || !extension) { return false; }
+bool lahar_extension_has_device(const char* extension) {
+    if (!extension) { return false; }
 
     for (size_t i = 0; i < lahar->extensions.ode_count; i++) {
         if (strcmp(extension, lahar->extensions.opt_dev_exts[i]) == 0) {
@@ -3018,8 +3038,8 @@ bool lahar_extension_has_device(Lahar* lahar, const char* extension) {
 // This function must be safe to call in absolutely any possible failure state,
 // including entire failure to load
 
-void lahar_deinit(Lahar* lahar) {
-    lahar_trace(lahar, "Deiniting lahar");
+void lahar_deinit(void) {
+    lahar_trace("Deiniting lahar");
 
     if (vkDeviceWaitIdle) {
         vkDeviceWaitIdle(lahar->device);
@@ -3178,7 +3198,7 @@ void lahar_deinit(Lahar* lahar) {
 
 
 /** This builds a complete list of the instance level extensions required */
-uint32_t __lahar_temp_extensions(Lahar* lahar, LaharWindow* window, uint32_t* count, char*** ext_out) {
+uint32_t __lahar_temp_extensions(LaharWindow* window, uint32_t* count, char*** ext_out) {
     uint32_t err = LAHAR_ERR_SUCCESS;
 
     uint32_t ext_count = lahar->extensions.rie_count;
@@ -3191,7 +3211,7 @@ uint32_t __lahar_temp_extensions(Lahar* lahar, LaharWindow* window, uint32_t* co
     }
 
     uint32_t win_count = 0;
-    if ((err = lahar_window_get_extensions(lahar, lahar->windows[0].window, &win_count, NULL))) {
+    if ((err = lahar_window_get_extensions(lahar->windows[0].window, &win_count, NULL))) {
         goto end;
     }
 
@@ -3199,7 +3219,7 @@ uint32_t __lahar_temp_extensions(Lahar* lahar, LaharWindow* window, uint32_t* co
 
     win_exts = (char**)lahar_temp_alloc(sizeof(char*) * win_count);
 
-    if ((err = lahar_window_get_extensions(lahar, lahar->windows[0].window, &win_count, (const char**)win_exts))) {
+    if ((err = lahar_window_get_extensions(lahar->windows[0].window, &win_count, (const char**)win_exts))) {
         goto end;
     }
 
@@ -3227,7 +3247,7 @@ end:
 }
 
 
-uint32_t __lahar_build_inst_extensions(Lahar* lahar) {
+uint32_t __lahar_build_inst_extensions() {
     uint32_t err = LAHAR_ERR_SUCCESS;
     lahar_temp_mcheck();
 
@@ -3237,7 +3257,7 @@ uint32_t __lahar_build_inst_extensions(Lahar* lahar) {
     VkExtensionProperties* props = NULL;
 
     // Assume the first window is sufficient
-    __lahar_temp_extensions(lahar, lahar->windows[0].window, &ext_count, &extensions);
+    __lahar_temp_extensions(lahar->windows[0].window, &ext_count, &extensions);
 
     if ((lahar->vkresult = vkEnumerateInstanceExtensionProperties(NULL, &prop_count, NULL)) != VK_SUCCESS) {
         err = LAHAR_ERR_VK_ERR;
@@ -3275,7 +3295,7 @@ end:
     return err;
 }
 
-uint32_t __lahar_build_instance(Lahar* lahar) {
+uint32_t __lahar_build_instance(void) {
     uint32_t err = LAHAR_ERR_SUCCESS;
     lahar_temp_mcheck();
 
@@ -3291,7 +3311,7 @@ uint32_t __lahar_build_instance(Lahar* lahar) {
     bool dbg_layer_found = false;
 
     // Assume the first window is sufficient
-    __lahar_temp_extensions(lahar, lahar->windows[0].window, &ext_count, &extensions);
+    __lahar_temp_extensions(lahar->windows[0].window, &ext_count, &extensions);
 
     VkApplicationInfo appinfo = {
         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -3338,7 +3358,7 @@ uint32_t __lahar_build_instance(Lahar* lahar) {
     }
 
 
-    if ((err = lahar_load_instance(lahar, __lahar_loader_inst))) {
+    if ((err = lahar_load_instance(__lahar_loader_inst))) {
         goto end;
     }
 
@@ -3377,13 +3397,13 @@ end:
     return err;
 }
 
-uint32_t __lahar_build_early_surface(Lahar* lahar) {
+uint32_t __lahar_build_early_surface(void) {
     uint32_t err = LAHAR_ERR_SUCCESS;
 
     for (size_t i = 0; i < lahar->window_count; i++) {
         LaharWindowState* winstate = &lahar->windows[i];
 
-        if ((err = lahar_window_surface_create(lahar, winstate->window, &winstate->surface))) {
+        if ((err = lahar_window_surface_create(winstate->window, &winstate->surface))) {
             return err;
         }
     }
@@ -3391,7 +3411,7 @@ uint32_t __lahar_build_early_surface(Lahar* lahar) {
     return err;
 }
 
-uint32_t __lahar_build_physdev(Lahar* lahar) {
+uint32_t __lahar_build_physdev(void) {
     uint32_t err = LAHAR_ERR_SUCCESS;
     lahar_temp_mcheck();
 
@@ -3497,7 +3517,7 @@ uint32_t __lahar_build_physdev(Lahar* lahar) {
     }
 
     if (lahar->wantvalidation) {
-        VkDebugUtilsMessengerCallbackDataEXT cbdata = {};
+        VkDebugUtilsMessengerCallbackDataEXT cbdata = ZINIT;
         LaharDeviceInfo* info = &dev_infos[best_dev];
 
         char msgbuf[512];
@@ -3521,7 +3541,7 @@ end:
     return err;
 }
 
-uint32_t __lahar_build_device(Lahar* lahar) {
+uint32_t __lahar_build_device(void) {
     uint32_t err = LAHAR_ERR_SUCCESS;
     lahar_temp_mcheck();
 
@@ -3541,7 +3561,7 @@ uint32_t __lahar_build_device(Lahar* lahar) {
         },
     };
 
-    VkPhysicalDeviceFeatures device_features = {};
+    VkPhysicalDeviceFeatures device_features = ZINIT;
 
     const char* dbg_layer_name = "VK_LAYER_KHRONOS_validation";
     bool has_dbg_layer = false;
@@ -3565,6 +3585,35 @@ uint32_t __lahar_build_device(Lahar* lahar) {
     const uint32_t queue_create_count = (lahar->physdev_info.graphics_queue_index == lahar->physdev_info.present_queue_index) ? 1 : 2;
     const uint32_t enabled_layer_count = has_dbg_layer ? 1 : 0;
 
+
+    // User supplied pnext, might be NULL
+    void* pnext = lahar->device_create_pnext;
+
+    VkPhysicalDeviceDynamicRenderingFeatures dynamic_rendering_feature = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES,
+        .dynamicRendering = VK_TRUE
+    };
+
+    if (lahar_extension_has_device(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME)) {
+        const VkPhysicalDeviceDynamicRenderingFeatures* dyn_feature = 
+        (const VkPhysicalDeviceDynamicRenderingFeatures* )__lahar_pnext_fetch(pnext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES);
+
+        const VkPhysicalDeviceVulkan13Features* vk13_feature = 
+        (const VkPhysicalDeviceVulkan13Features* )__lahar_pnext_fetch(pnext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES);
+
+        if (vk13_feature) {
+            if (!vk13_feature->dynamicRendering) {
+                lahar_error("The dynamic rendering extension is enabled, and you passed a Vulkan 1.3 features, but without dynamic rendering on");
+                err = LAHAR_ERR_INVALID_CONFIGURATION;
+                goto end;
+            }
+        }
+        else if (!dyn_feature) {
+            dynamic_rendering_feature.pNext = pnext;
+            pnext = (void*)&dynamic_rendering_feature;
+        }
+    }
+
     VkDeviceCreateInfo create_info = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .queueCreateInfoCount = queue_create_count,
@@ -3574,14 +3623,14 @@ uint32_t __lahar_build_device(Lahar* lahar) {
         .enabledExtensionCount = 1,
         .ppEnabledExtensionNames = &swap_ext_name,
         .pEnabledFeatures = &device_features,
-        .pNext = lahar->device_create_pnext,
+        .pNext = pnext,
     };
 
     if ((lahar->vkresult = vkCreateDevice(lahar->physdev_info.physdev, &create_info, lahar->vkalloc, &lahar->device)) != VK_SUCCESS) {
         goto end;
     }
 
-    if ((err = lahar_load_device(lahar, __lahar_loader_dev))) {
+    if ((err = lahar_load_device(__lahar_loader_dev))) {
         goto end;
     }
 
@@ -3606,7 +3655,7 @@ end:
     return err;
 }
 
-uint32_t __lahar_build_swapchain(Lahar* lahar) {
+uint32_t __lahar_build_swapchain(void) {
     uint32_t err = LAHAR_ERR_SUCCESS;
     lahar_temp_mcheck();
 
@@ -3621,7 +3670,7 @@ uint32_t __lahar_build_swapchain(Lahar* lahar) {
 
     for (size_t i = 0; i < lahar->window_count; i++) {
         LaharWindowState* winstate = &lahar->windows[i];
-        VkSurfaceCapabilitiesKHR surface_caps = {};
+        VkSurfaceCapabilitiesKHR surface_caps = ZINIT;
 
         if (winstate->desired_img_count == 0) {
             winstate->desired_img_count = winstate->max_in_flight;
@@ -3632,7 +3681,7 @@ uint32_t __lahar_build_swapchain(Lahar* lahar) {
             goto end;
         }
 
-        if ((err = choose_format(lahar, winstate, &lahar->physdev_info, &winstate->surface_format))) {
+        if ((err = choose_format(winstate, &lahar->physdev_info, &winstate->surface_format))) {
             goto end;
         }
 
@@ -3657,7 +3706,7 @@ uint32_t __lahar_build_swapchain(Lahar* lahar) {
             .oldSwapchain = VK_NULL_HANDLE,
         };
 
-        if ((err = lahar_window_get_size(lahar, winstate->window, &create_info.imageExtent.width, &create_info.imageExtent.height))) {
+        if ((err = lahar_window_get_size(winstate->window, &create_info.imageExtent.width, &create_info.imageExtent.height))) {
             goto end;
         }
 
@@ -3675,7 +3724,7 @@ uint32_t __lahar_build_swapchain(Lahar* lahar) {
             create_info.imageExtent.height = surface_caps.minImageExtent.height;
         }
 
-        if ((err = choose_mode(lahar, winstate, &lahar->physdev_info, &create_info.presentMode))) {
+        if ((err = choose_mode(winstate, &lahar->physdev_info, &create_info.presentMode))) {
             goto end;
         }
 
@@ -3697,7 +3746,7 @@ uint32_t __lahar_build_swapchain(Lahar* lahar) {
 
         vkGetSwapchainImagesKHR(lahar->device, winstate->swapchain, &winstate->swap_size, NULL);
 
-        lahar_trace(lahar, "Window %zu had a swapchain of size %lu created", i, winstate->swap_size);
+        lahar_trace("Window %zu had a swapchain of size %lu created", i, winstate->swap_size);
 
         for (size_t j = 0; j < winstate->attachment_count; j++) {
             size_t bytes = winstate->swap_size * sizeof(LaharAttachment);
@@ -3804,7 +3853,7 @@ end:
     return err;
 }
 
-uint32_t __lahar_build_sync(Lahar* lahar) {
+uint32_t __lahar_build_sync(void) {
     uint32_t err = LAHAR_ERR_SUCCESS;
 
     VkSemaphoreCreateInfo sem_info = {
@@ -3831,7 +3880,7 @@ uint32_t __lahar_build_sync(Lahar* lahar) {
         winstate->render_finished_size = fin_ct;
         winstate->in_flight_size = fence_ct;
 
-        lahar_trace(lahar, "Window %zu had %lu fences, %lu avail sems, and %lu finished sems created", i, fence_ct, avail_ct, fence_ct);
+        lahar_trace("Window %zu had %lu fences, %lu avail sems, and %lu finished sems created", i, fence_ct, avail_ct, fence_ct);
 
         for (size_t j = 0; j < avail_ct; j++) {
             if ((lahar->vkresult = vkCreateSemaphore(lahar->device, &sem_info, lahar->vkalloc, &winstate->image_available[j])) != VK_SUCCESS) {
@@ -3855,26 +3904,26 @@ uint32_t __lahar_build_sync(Lahar* lahar) {
     return err;
 }
 
-uint32_t lahar_build(Lahar* lahar) {
+uint32_t lahar_build(void) {
     uint32_t err = LAHAR_ERR_SUCCESS;
 
-    if ((err = __lahar_build_inst_extensions(lahar))) { goto end; }
-    if ((err = __lahar_build_instance(lahar))) { goto end; }
-    if ((err = __lahar_build_early_surface(lahar))) { goto end; }
-    if ((err = __lahar_build_physdev(lahar))) { goto end; }
-    if ((err = __lahar_build_device(lahar))) { goto end; }
-    if ((err = __lahar_build_swapchain(lahar))) { goto end; }
-    if ((err = __lahar_build_sync(lahar))) { goto end; }
+    if ((err = __lahar_build_inst_extensions())) { goto end; }
+    if ((err = __lahar_build_instance())) { goto end; }
+    if ((err = __lahar_build_early_surface())) { goto end; }
+    if ((err = __lahar_build_physdev())) { goto end; }
+    if ((err = __lahar_build_device())) { goto end; }
+    if ((err = __lahar_build_swapchain())) { goto end; }
+    if ((err = __lahar_build_sync())) { goto end; }
 
 end:
     if (err) {
-        lahar_deinit(lahar);
+        lahar_deinit();
     }
 
     return err;
 }
 
-LaharWindowState* lahar_window_state(Lahar* lahar, LaharWindow* window) {
+LaharWindowState* lahar_window_state(LaharWindow* window) {
     for (size_t i = 0; i < lahar->window_count; i++) {
         if (lahar->windows[i].window == window) {
             return &lahar->windows[i];
@@ -3884,19 +3933,19 @@ LaharWindowState* lahar_window_state(Lahar* lahar, LaharWindow* window) {
     return NULL;
 }
 
-uint32_t lahar_window_swapchain_resize(Lahar* lahar, LaharWindow* window) {
-    LaharWindowState* winstate = lahar_window_state(lahar, window);
+uint32_t lahar_window_swapchain_resize(LaharWindow* window) {
+    LaharWindowState* winstate = lahar_window_state(window);
 
     if (!winstate) { return LAHAR_ERR_INVALID_WINDOW; }
 
     LaharSurfaceResizeFunc resizer = winstate->resize_callback ? winstate->resize_callback : __lahar_default_resizer;
-    return resizer(lahar, window);
+    return resizer(window);
 }
 
-uint32_t lahar_window_frame_begin(Lahar* lahar, LaharWindow* window) {
-    if (!lahar || !window) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+uint32_t lahar_window_frame_begin(LaharWindow* window) {
+    if (!window) { return LAHAR_ERR_ILLEGAL_PARAMS; }
 
-    LaharWindowState* winstate = lahar_window_state(lahar, window);
+    LaharWindowState* winstate = lahar_window_state(window);
 
     if (!winstate) { return LAHAR_ERR_INVALID_WINDOW; }
 
@@ -3909,16 +3958,16 @@ uint32_t lahar_window_frame_begin(Lahar* lahar, LaharWindow* window) {
     VkResult res = vkAcquireNextImageKHR(lahar->device, winstate->swapchain, UINT64_MAX, winstate->image_available[winstate->flight_index], VK_NULL_HANDLE, &winstate->frame_index);
 
     if (res == VK_SUBOPTIMAL_KHR || res == VK_ERROR_OUT_OF_DATE_KHR) {
-        lahar_trace(lahar, "Attempted to begin frame, out of date");
+        lahar_trace("Attempted to begin frame, out of date");
 
         if (winstate->auto_recreate_swap) {
 
             uint32_t err;
-            if ((err = lahar_window_swapchain_resize(lahar, window))) {
+            if ((err = lahar_window_swapchain_resize(window))) {
                 return err;
             }
 
-            return lahar_window_frame_begin(lahar, window);
+            return lahar_window_frame_begin(window);
         }
         else {
             return LAHAR_ERR_SWAPCHAIN_OUT_OF_DATE;
@@ -3929,7 +3978,7 @@ uint32_t lahar_window_frame_begin(Lahar* lahar, LaharWindow* window) {
         return LAHAR_ERR_VK_ERR;
     }
 
-    lahar_trace(lahar, "Frame began\n\tFlight index: %lu\n\tSwap frame index: %lu", winstate->flight_index, winstate->frame_index);
+    lahar_trace("Frame began\n\tFlight index: %lu\n\tSwap frame index: %lu", winstate->flight_index, winstate->frame_index);
 
     vkResetFences(lahar->device, 1, &winstate->in_flight[winstate->flight_index]);
     winstate->frame_phase = LAHAR_FRAME_PHASE_DRAW;
@@ -3937,10 +3986,10 @@ uint32_t lahar_window_frame_begin(Lahar* lahar, LaharWindow* window) {
     return LAHAR_ERR_SUCCESS;
 }
 
-uint32_t lahar_window_submit_all(Lahar* lahar, LaharWindow* window, VkCommandBuffer* cmds, uint32_t cmd_count) {
-    if (!lahar || !window || !cmds || cmd_count == 0) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+uint32_t lahar_window_submit_all(LaharWindow* window, VkCommandBuffer* cmds, uint32_t cmd_count) {
+    if (!window || !cmds || cmd_count == 0) { return LAHAR_ERR_ILLEGAL_PARAMS; }
 
-    LaharWindowState* winstate = lahar_window_state(lahar, window);
+    LaharWindowState* winstate = lahar_window_state(window);
 
     if (!winstate) { return LAHAR_ERR_INVALID_WINDOW; }
 
@@ -3970,17 +4019,17 @@ uint32_t lahar_window_submit_all(Lahar* lahar, LaharWindow* window, VkCommandBuf
     return LAHAR_ERR_SUCCESS;
 }
 
-uint32_t lahar_window_submit(Lahar* lahar, LaharWindow* window, VkCommandBuffer cmd) {
-    return lahar_window_submit_all(lahar, window, &cmd, 1);
+uint32_t lahar_window_submit(LaharWindow* window, VkCommandBuffer cmd) {
+    return lahar_window_submit_all(window, &cmd, 1);
 }
 
 
-uint32_t lahar_window_present(Lahar* lahar, LaharWindow* window) {
-    LaharWindowState* winstate = lahar_window_state(lahar, window);
+uint32_t lahar_window_present(LaharWindow* window) {
+    LaharWindowState* winstate = lahar_window_state(window);
 
     if (!winstate) { return LAHAR_ERR_INVALID_WINDOW; }
 
-    VkPresentInfoKHR present_info = {};
+    VkPresentInfoKHR present_info = ZINIT;
 
     if (winstate->frame_phase == LAHAR_FRAME_PHASE_BEGIN) {
         return LAHAR_ERR_INVALID_FRAME_STATE;
@@ -4068,10 +4117,10 @@ VkImageAspectFlags __lahar_aspect_mask_from_usage(VkImageUsageFlags usage, VkFor
     return VK_IMAGE_ASPECT_COLOR_BIT;
 }
 
-uint32_t lahar_window_attachment_transition(Lahar* lahar, LaharWindow* window, uint32_t attachment_index, VkImageLayout layout, VkCommandBuffer cmd) {
-    if (!lahar || !window || cmd == VK_NULL_HANDLE) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+uint32_t lahar_window_attachment_transition(LaharWindow* window, uint32_t attachment_index, VkImageLayout layout, VkCommandBuffer cmd) {
+    if (!window || cmd == VK_NULL_HANDLE) { return LAHAR_ERR_ILLEGAL_PARAMS; }
 
-    LaharWindowState* winstate = lahar_window_state(lahar, window);
+    LaharWindowState* winstate = lahar_window_state(window);
 
     if (!winstate) { return LAHAR_ERR_INVALID_WINDOW; }
     if (attachment_index >= winstate->attachment_count) { return LAHAR_ERR_ILLEGAL_PARAMS; }
@@ -4116,8 +4165,8 @@ uint32_t lahar_window_attachment_transition(Lahar* lahar, LaharWindow* window, u
     return LAHAR_ERR_SUCCESS;
 }
 
-uint32_t lahar_window_wait_inactive(Lahar* lahar, LaharWindow* window) {
-    LaharWindowState* winstate = lahar_window_state(lahar, window);
+uint32_t lahar_window_wait_inactive(LaharWindow* window) {
+    LaharWindowState* winstate = lahar_window_state(window);
     if (!winstate) { return LAHAR_ERR_INVALID_WINDOW; }
 
     if ((lahar->vkresult = vkWaitForFences(lahar->device, winstate->max_in_flight, winstate->in_flight, VK_TRUE, UINT64_MAX)) != VK_SUCCESS) {
@@ -5338,17 +5387,17 @@ PFN_vkAcquireNextImage2KHR vkAcquireNextImage2KHR;
 #endif /* (defined(VK_KHR_device_group) && defined(VK_KHR_swapchain)) || (defined(VK_KHR_swapchain) && defined(VK_VERSION_1_1)) */
 /* LAHAR_VK_PROTOTYPES_C */
 
-#define lahar_load(lahar, name) name = (PFN_##name)loadfn(lahar, #name)
+#define lahar_load(name) name = (PFN_##name)loadfn(#name)
 
-static uint32_t lahar_load_loader(Lahar* lahar, LaharLoaderFunc loadfn) {
+static uint32_t lahar_load_loader(LaharLoaderFunc loadfn) {
 /* LAHAR_VK_LOAD_LOADER */
 #if defined(VK_VERSION_1_0)
-    lahar_load(lahar, vkCreateInstance);
-    lahar_load(lahar, vkEnumerateInstanceExtensionProperties);
-    lahar_load(lahar, vkEnumerateInstanceLayerProperties);
+    lahar_load(vkCreateInstance);
+    lahar_load(vkEnumerateInstanceExtensionProperties);
+    lahar_load(vkEnumerateInstanceLayerProperties);
 #endif /* defined(VK_VERSION_1_0) */
 #if defined(VK_VERSION_1_1)
-    lahar_load(lahar, vkEnumerateInstanceVersion);
+    lahar_load(vkEnumerateInstanceVersion);
 #endif /* defined(VK_VERSION_1_1) */
 /* LAHAR_VK_LOAD_LOADER */
 
@@ -5361,1214 +5410,1214 @@ static uint32_t lahar_load_loader(Lahar* lahar, LaharLoaderFunc loadfn) {
     if (!vkEnumerateInstanceVersion) { return LAHAR_ERR_LOAD_FAILURE; }
 #endif /* defined(VK_VERSION_1_1) */
 
-    lahar_load(lahar, vkGetInstanceProcAddr);
+    lahar_load(vkGetInstanceProcAddr);
     if (!vkGetInstanceProcAddr) { return LAHAR_ERR_LOAD_FAILURE; }
 
     return LAHAR_ERR_SUCCESS;
 }
 
-static uint32_t lahar_load_instance(Lahar* lahar, LaharLoaderFunc loadfn) {
+static uint32_t lahar_load_instance(LaharLoaderFunc loadfn) {
 /* LAHAR_VK_LOAD_INSTANCE */
 #if defined(VK_VERSION_1_0)
-    lahar_load(lahar, vkCreateDevice);
-    lahar_load(lahar, vkDestroyInstance);
-    lahar_load(lahar, vkEnumerateDeviceExtensionProperties);
-    lahar_load(lahar, vkEnumerateDeviceLayerProperties);
-    lahar_load(lahar, vkEnumeratePhysicalDevices);
-    lahar_load(lahar, vkGetDeviceProcAddr);
-    lahar_load(lahar, vkGetPhysicalDeviceFeatures);
-    lahar_load(lahar, vkGetPhysicalDeviceFormatProperties);
-    lahar_load(lahar, vkGetPhysicalDeviceImageFormatProperties);
-    lahar_load(lahar, vkGetPhysicalDeviceMemoryProperties);
-    lahar_load(lahar, vkGetPhysicalDeviceProperties);
-    lahar_load(lahar, vkGetPhysicalDeviceQueueFamilyProperties);
-    lahar_load(lahar, vkGetPhysicalDeviceSparseImageFormatProperties);
+    lahar_load(vkCreateDevice);
+    lahar_load(vkDestroyInstance);
+    lahar_load(vkEnumerateDeviceExtensionProperties);
+    lahar_load(vkEnumerateDeviceLayerProperties);
+    lahar_load(vkEnumeratePhysicalDevices);
+    lahar_load(vkGetDeviceProcAddr);
+    lahar_load(vkGetPhysicalDeviceFeatures);
+    lahar_load(vkGetPhysicalDeviceFormatProperties);
+    lahar_load(vkGetPhysicalDeviceImageFormatProperties);
+    lahar_load(vkGetPhysicalDeviceMemoryProperties);
+    lahar_load(vkGetPhysicalDeviceProperties);
+    lahar_load(vkGetPhysicalDeviceQueueFamilyProperties);
+    lahar_load(vkGetPhysicalDeviceSparseImageFormatProperties);
 #endif /* defined(VK_VERSION_1_0) */
 #if defined(VK_VERSION_1_1)
-    lahar_load(lahar, vkEnumeratePhysicalDeviceGroups);
-    lahar_load(lahar, vkGetPhysicalDeviceExternalBufferProperties);
-    lahar_load(lahar, vkGetPhysicalDeviceExternalFenceProperties);
-    lahar_load(lahar, vkGetPhysicalDeviceExternalSemaphoreProperties);
-    lahar_load(lahar, vkGetPhysicalDeviceFeatures2);
-    lahar_load(lahar, vkGetPhysicalDeviceFormatProperties2);
-    lahar_load(lahar, vkGetPhysicalDeviceImageFormatProperties2);
-    lahar_load(lahar, vkGetPhysicalDeviceMemoryProperties2);
-    lahar_load(lahar, vkGetPhysicalDeviceProperties2);
-    lahar_load(lahar, vkGetPhysicalDeviceQueueFamilyProperties2);
-    lahar_load(lahar, vkGetPhysicalDeviceSparseImageFormatProperties2);
+    lahar_load(vkEnumeratePhysicalDeviceGroups);
+    lahar_load(vkGetPhysicalDeviceExternalBufferProperties);
+    lahar_load(vkGetPhysicalDeviceExternalFenceProperties);
+    lahar_load(vkGetPhysicalDeviceExternalSemaphoreProperties);
+    lahar_load(vkGetPhysicalDeviceFeatures2);
+    lahar_load(vkGetPhysicalDeviceFormatProperties2);
+    lahar_load(vkGetPhysicalDeviceImageFormatProperties2);
+    lahar_load(vkGetPhysicalDeviceMemoryProperties2);
+    lahar_load(vkGetPhysicalDeviceProperties2);
+    lahar_load(vkGetPhysicalDeviceQueueFamilyProperties2);
+    lahar_load(vkGetPhysicalDeviceSparseImageFormatProperties2);
 #endif /* defined(VK_VERSION_1_1) */
 #if defined(VK_VERSION_1_3)
-    lahar_load(lahar, vkGetPhysicalDeviceToolProperties);
+    lahar_load(vkGetPhysicalDeviceToolProperties);
 #endif /* defined(VK_VERSION_1_3) */
 #if defined(VK_ARM_data_graph)
-    lahar_load(lahar, vkGetPhysicalDeviceQueueFamilyDataGraphProcessingEnginePropertiesARM);
-    lahar_load(lahar, vkGetPhysicalDeviceQueueFamilyDataGraphPropertiesARM);
+    lahar_load(vkGetPhysicalDeviceQueueFamilyDataGraphProcessingEnginePropertiesARM);
+    lahar_load(vkGetPhysicalDeviceQueueFamilyDataGraphPropertiesARM);
 #endif /* defined(VK_ARM_data_graph) */
 #if defined(VK_ARM_tensors)
-    lahar_load(lahar, vkGetPhysicalDeviceExternalTensorPropertiesARM);
+    lahar_load(vkGetPhysicalDeviceExternalTensorPropertiesARM);
 #endif /* defined(VK_ARM_tensors) */
 #if defined(VK_EXT_acquire_drm_display)
-    lahar_load(lahar, vkAcquireDrmDisplayEXT);
-    lahar_load(lahar, vkGetDrmDisplayEXT);
+    lahar_load(vkAcquireDrmDisplayEXT);
+    lahar_load(vkGetDrmDisplayEXT);
 #endif /* defined(VK_EXT_acquire_drm_display) */
 #if defined(VK_EXT_acquire_xlib_display)
-    lahar_load(lahar, vkAcquireXlibDisplayEXT);
-    lahar_load(lahar, vkGetRandROutputDisplayEXT);
+    lahar_load(vkAcquireXlibDisplayEXT);
+    lahar_load(vkGetRandROutputDisplayEXT);
 #endif /* defined(VK_EXT_acquire_xlib_display) */
 #if defined(VK_EXT_calibrated_timestamps)
-    lahar_load(lahar, vkGetPhysicalDeviceCalibrateableTimeDomainsEXT);
+    lahar_load(vkGetPhysicalDeviceCalibrateableTimeDomainsEXT);
 #endif /* defined(VK_EXT_calibrated_timestamps) */
 #if defined(VK_EXT_debug_report)
-    lahar_load(lahar, vkCreateDebugReportCallbackEXT);
-    lahar_load(lahar, vkDebugReportMessageEXT);
-    lahar_load(lahar, vkDestroyDebugReportCallbackEXT);
+    lahar_load(vkCreateDebugReportCallbackEXT);
+    lahar_load(vkDebugReportMessageEXT);
+    lahar_load(vkDestroyDebugReportCallbackEXT);
 #endif /* defined(VK_EXT_debug_report) */
 #if defined(VK_EXT_debug_utils)
-    lahar_load(lahar, vkCmdBeginDebugUtilsLabelEXT);
-    lahar_load(lahar, vkCmdEndDebugUtilsLabelEXT);
-    lahar_load(lahar, vkCmdInsertDebugUtilsLabelEXT);
-    lahar_load(lahar, vkCreateDebugUtilsMessengerEXT);
-    lahar_load(lahar, vkDestroyDebugUtilsMessengerEXT);
-    lahar_load(lahar, vkQueueBeginDebugUtilsLabelEXT);
-    lahar_load(lahar, vkQueueEndDebugUtilsLabelEXT);
-    lahar_load(lahar, vkQueueInsertDebugUtilsLabelEXT);
-    lahar_load(lahar, vkSetDebugUtilsObjectNameEXT);
-    lahar_load(lahar, vkSetDebugUtilsObjectTagEXT);
-    lahar_load(lahar, vkSubmitDebugUtilsMessageEXT);
+    lahar_load(vkCmdBeginDebugUtilsLabelEXT);
+    lahar_load(vkCmdEndDebugUtilsLabelEXT);
+    lahar_load(vkCmdInsertDebugUtilsLabelEXT);
+    lahar_load(vkCreateDebugUtilsMessengerEXT);
+    lahar_load(vkDestroyDebugUtilsMessengerEXT);
+    lahar_load(vkQueueBeginDebugUtilsLabelEXT);
+    lahar_load(vkQueueEndDebugUtilsLabelEXT);
+    lahar_load(vkQueueInsertDebugUtilsLabelEXT);
+    lahar_load(vkSetDebugUtilsObjectNameEXT);
+    lahar_load(vkSetDebugUtilsObjectTagEXT);
+    lahar_load(vkSubmitDebugUtilsMessageEXT);
 #endif /* defined(VK_EXT_debug_utils) */
 #if defined(VK_EXT_direct_mode_display)
-    lahar_load(lahar, vkReleaseDisplayEXT);
+    lahar_load(vkReleaseDisplayEXT);
 #endif /* defined(VK_EXT_direct_mode_display) */
 #if defined(VK_EXT_directfb_surface)
-    lahar_load(lahar, vkCreateDirectFBSurfaceEXT);
-    lahar_load(lahar, vkGetPhysicalDeviceDirectFBPresentationSupportEXT);
+    lahar_load(vkCreateDirectFBSurfaceEXT);
+    lahar_load(vkGetPhysicalDeviceDirectFBPresentationSupportEXT);
 #endif /* defined(VK_EXT_directfb_surface) */
 #if defined(VK_EXT_display_surface_counter)
-    lahar_load(lahar, vkGetPhysicalDeviceSurfaceCapabilities2EXT);
+    lahar_load(vkGetPhysicalDeviceSurfaceCapabilities2EXT);
 #endif /* defined(VK_EXT_display_surface_counter) */
 #if defined(VK_EXT_full_screen_exclusive)
-    lahar_load(lahar, vkGetPhysicalDeviceSurfacePresentModes2EXT);
+    lahar_load(vkGetPhysicalDeviceSurfacePresentModes2EXT);
 #endif /* defined(VK_EXT_full_screen_exclusive) */
 #if defined(VK_EXT_headless_surface)
-    lahar_load(lahar, vkCreateHeadlessSurfaceEXT);
+    lahar_load(vkCreateHeadlessSurfaceEXT);
 #endif /* defined(VK_EXT_headless_surface) */
 #if defined(VK_EXT_metal_surface)
-    lahar_load(lahar, vkCreateMetalSurfaceEXT);
+    lahar_load(vkCreateMetalSurfaceEXT);
 #endif /* defined(VK_EXT_metal_surface) */
 #if defined(VK_EXT_sample_locations)
-    lahar_load(lahar, vkGetPhysicalDeviceMultisamplePropertiesEXT);
+    lahar_load(vkGetPhysicalDeviceMultisamplePropertiesEXT);
 #endif /* defined(VK_EXT_sample_locations) */
 #if defined(VK_EXT_tooling_info)
-    lahar_load(lahar, vkGetPhysicalDeviceToolPropertiesEXT);
+    lahar_load(vkGetPhysicalDeviceToolPropertiesEXT);
 #endif /* defined(VK_EXT_tooling_info) */
 #if defined(VK_FUCHSIA_imagepipe_surface)
-    lahar_load(lahar, vkCreateImagePipeSurfaceFUCHSIA);
+    lahar_load(vkCreateImagePipeSurfaceFUCHSIA);
 #endif /* defined(VK_FUCHSIA_imagepipe_surface) */
 #if defined(VK_GGP_stream_descriptor_surface)
-    lahar_load(lahar, vkCreateStreamDescriptorSurfaceGGP);
+    lahar_load(vkCreateStreamDescriptorSurfaceGGP);
 #endif /* defined(VK_GGP_stream_descriptor_surface) */
 #if defined(VK_KHR_android_surface)
-    lahar_load(lahar, vkCreateAndroidSurfaceKHR);
+    lahar_load(vkCreateAndroidSurfaceKHR);
 #endif /* defined(VK_KHR_android_surface) */
 #if defined(VK_KHR_calibrated_timestamps)
-    lahar_load(lahar, vkGetPhysicalDeviceCalibrateableTimeDomainsKHR);
+    lahar_load(vkGetPhysicalDeviceCalibrateableTimeDomainsKHR);
 #endif /* defined(VK_KHR_calibrated_timestamps) */
 #if defined(VK_KHR_cooperative_matrix)
-    lahar_load(lahar, vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR);
+    lahar_load(vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR);
 #endif /* defined(VK_KHR_cooperative_matrix) */
 #if defined(VK_KHR_device_group_creation)
-    lahar_load(lahar, vkEnumeratePhysicalDeviceGroupsKHR);
+    lahar_load(vkEnumeratePhysicalDeviceGroupsKHR);
 #endif /* defined(VK_KHR_device_group_creation) */
 #if defined(VK_KHR_display)
-    lahar_load(lahar, vkCreateDisplayModeKHR);
-    lahar_load(lahar, vkCreateDisplayPlaneSurfaceKHR);
-    lahar_load(lahar, vkGetDisplayModePropertiesKHR);
-    lahar_load(lahar, vkGetDisplayPlaneCapabilitiesKHR);
-    lahar_load(lahar, vkGetDisplayPlaneSupportedDisplaysKHR);
-    lahar_load(lahar, vkGetPhysicalDeviceDisplayPlanePropertiesKHR);
-    lahar_load(lahar, vkGetPhysicalDeviceDisplayPropertiesKHR);
+    lahar_load(vkCreateDisplayModeKHR);
+    lahar_load(vkCreateDisplayPlaneSurfaceKHR);
+    lahar_load(vkGetDisplayModePropertiesKHR);
+    lahar_load(vkGetDisplayPlaneCapabilitiesKHR);
+    lahar_load(vkGetDisplayPlaneSupportedDisplaysKHR);
+    lahar_load(vkGetPhysicalDeviceDisplayPlanePropertiesKHR);
+    lahar_load(vkGetPhysicalDeviceDisplayPropertiesKHR);
 #endif /* defined(VK_KHR_display) */
 #if defined(VK_KHR_external_fence_capabilities)
-    lahar_load(lahar, vkGetPhysicalDeviceExternalFencePropertiesKHR);
+    lahar_load(vkGetPhysicalDeviceExternalFencePropertiesKHR);
 #endif /* defined(VK_KHR_external_fence_capabilities) */
 #if defined(VK_KHR_external_memory_capabilities)
-    lahar_load(lahar, vkGetPhysicalDeviceExternalBufferPropertiesKHR);
+    lahar_load(vkGetPhysicalDeviceExternalBufferPropertiesKHR);
 #endif /* defined(VK_KHR_external_memory_capabilities) */
 #if defined(VK_KHR_external_semaphore_capabilities)
-    lahar_load(lahar, vkGetPhysicalDeviceExternalSemaphorePropertiesKHR);
+    lahar_load(vkGetPhysicalDeviceExternalSemaphorePropertiesKHR);
 #endif /* defined(VK_KHR_external_semaphore_capabilities) */
 #if defined(VK_KHR_fragment_shading_rate)
-    lahar_load(lahar, vkGetPhysicalDeviceFragmentShadingRatesKHR);
+    lahar_load(vkGetPhysicalDeviceFragmentShadingRatesKHR);
 #endif /* defined(VK_KHR_fragment_shading_rate) */
 #if defined(VK_KHR_get_display_properties2)
-    lahar_load(lahar, vkGetDisplayModeProperties2KHR);
-    lahar_load(lahar, vkGetDisplayPlaneCapabilities2KHR);
-    lahar_load(lahar, vkGetPhysicalDeviceDisplayPlaneProperties2KHR);
-    lahar_load(lahar, vkGetPhysicalDeviceDisplayProperties2KHR);
+    lahar_load(vkGetDisplayModeProperties2KHR);
+    lahar_load(vkGetDisplayPlaneCapabilities2KHR);
+    lahar_load(vkGetPhysicalDeviceDisplayPlaneProperties2KHR);
+    lahar_load(vkGetPhysicalDeviceDisplayProperties2KHR);
 #endif /* defined(VK_KHR_get_display_properties2) */
 #if defined(VK_KHR_get_physical_device_properties2)
-    lahar_load(lahar, vkGetPhysicalDeviceFeatures2KHR);
-    lahar_load(lahar, vkGetPhysicalDeviceFormatProperties2KHR);
-    lahar_load(lahar, vkGetPhysicalDeviceImageFormatProperties2KHR);
-    lahar_load(lahar, vkGetPhysicalDeviceMemoryProperties2KHR);
-    lahar_load(lahar, vkGetPhysicalDeviceProperties2KHR);
-    lahar_load(lahar, vkGetPhysicalDeviceQueueFamilyProperties2KHR);
-    lahar_load(lahar, vkGetPhysicalDeviceSparseImageFormatProperties2KHR);
+    lahar_load(vkGetPhysicalDeviceFeatures2KHR);
+    lahar_load(vkGetPhysicalDeviceFormatProperties2KHR);
+    lahar_load(vkGetPhysicalDeviceImageFormatProperties2KHR);
+    lahar_load(vkGetPhysicalDeviceMemoryProperties2KHR);
+    lahar_load(vkGetPhysicalDeviceProperties2KHR);
+    lahar_load(vkGetPhysicalDeviceQueueFamilyProperties2KHR);
+    lahar_load(vkGetPhysicalDeviceSparseImageFormatProperties2KHR);
 #endif /* defined(VK_KHR_get_physical_device_properties2) */
 #if defined(VK_KHR_get_surface_capabilities2)
-    lahar_load(lahar, vkGetPhysicalDeviceSurfaceCapabilities2KHR);
-    lahar_load(lahar, vkGetPhysicalDeviceSurfaceFormats2KHR);
+    lahar_load(vkGetPhysicalDeviceSurfaceCapabilities2KHR);
+    lahar_load(vkGetPhysicalDeviceSurfaceFormats2KHR);
 #endif /* defined(VK_KHR_get_surface_capabilities2) */
 #if defined(VK_KHR_performance_query)
-    lahar_load(lahar, vkEnumeratePhysicalDeviceQueueFamilyPerformanceQueryCountersKHR);
-    lahar_load(lahar, vkGetPhysicalDeviceQueueFamilyPerformanceQueryPassesKHR);
+    lahar_load(vkEnumeratePhysicalDeviceQueueFamilyPerformanceQueryCountersKHR);
+    lahar_load(vkGetPhysicalDeviceQueueFamilyPerformanceQueryPassesKHR);
 #endif /* defined(VK_KHR_performance_query) */
 #if defined(VK_KHR_surface)
-    lahar_load(lahar, vkDestroySurfaceKHR);
-    lahar_load(lahar, vkGetPhysicalDeviceSurfaceCapabilitiesKHR);
-    lahar_load(lahar, vkGetPhysicalDeviceSurfaceFormatsKHR);
-    lahar_load(lahar, vkGetPhysicalDeviceSurfacePresentModesKHR);
-    lahar_load(lahar, vkGetPhysicalDeviceSurfaceSupportKHR);
+    lahar_load(vkDestroySurfaceKHR);
+    lahar_load(vkGetPhysicalDeviceSurfaceCapabilitiesKHR);
+    lahar_load(vkGetPhysicalDeviceSurfaceFormatsKHR);
+    lahar_load(vkGetPhysicalDeviceSurfacePresentModesKHR);
+    lahar_load(vkGetPhysicalDeviceSurfaceSupportKHR);
 #endif /* defined(VK_KHR_surface) */
 #if defined(VK_KHR_video_encode_queue)
-    lahar_load(lahar, vkGetPhysicalDeviceVideoEncodeQualityLevelPropertiesKHR);
+    lahar_load(vkGetPhysicalDeviceVideoEncodeQualityLevelPropertiesKHR);
 #endif /* defined(VK_KHR_video_encode_queue) */
 #if defined(VK_KHR_video_queue)
-    lahar_load(lahar, vkGetPhysicalDeviceVideoCapabilitiesKHR);
-    lahar_load(lahar, vkGetPhysicalDeviceVideoFormatPropertiesKHR);
+    lahar_load(vkGetPhysicalDeviceVideoCapabilitiesKHR);
+    lahar_load(vkGetPhysicalDeviceVideoFormatPropertiesKHR);
 #endif /* defined(VK_KHR_video_queue) */
 #if defined(VK_KHR_wayland_surface)
-    lahar_load(lahar, vkCreateWaylandSurfaceKHR);
-    lahar_load(lahar, vkGetPhysicalDeviceWaylandPresentationSupportKHR);
+    lahar_load(vkCreateWaylandSurfaceKHR);
+    lahar_load(vkGetPhysicalDeviceWaylandPresentationSupportKHR);
 #endif /* defined(VK_KHR_wayland_surface) */
 #if defined(VK_KHR_win32_surface)
-    lahar_load(lahar, vkCreateWin32SurfaceKHR);
-    lahar_load(lahar, vkGetPhysicalDeviceWin32PresentationSupportKHR);
+    lahar_load(vkCreateWin32SurfaceKHR);
+    lahar_load(vkGetPhysicalDeviceWin32PresentationSupportKHR);
 #endif /* defined(VK_KHR_win32_surface) */
 #if defined(VK_KHR_xcb_surface)
-    lahar_load(lahar, vkCreateXcbSurfaceKHR);
-    lahar_load(lahar, vkGetPhysicalDeviceXcbPresentationSupportKHR);
+    lahar_load(vkCreateXcbSurfaceKHR);
+    lahar_load(vkGetPhysicalDeviceXcbPresentationSupportKHR);
 #endif /* defined(VK_KHR_xcb_surface) */
 #if defined(VK_KHR_xlib_surface)
-    lahar_load(lahar, vkCreateXlibSurfaceKHR);
-    lahar_load(lahar, vkGetPhysicalDeviceXlibPresentationSupportKHR);
+    lahar_load(vkCreateXlibSurfaceKHR);
+    lahar_load(vkGetPhysicalDeviceXlibPresentationSupportKHR);
 #endif /* defined(VK_KHR_xlib_surface) */
 #if defined(VK_MVK_ios_surface)
-    lahar_load(lahar, vkCreateIOSSurfaceMVK);
+    lahar_load(vkCreateIOSSurfaceMVK);
 #endif /* defined(VK_MVK_ios_surface) */
 #if defined(VK_MVK_macos_surface)
-    lahar_load(lahar, vkCreateMacOSSurfaceMVK);
+    lahar_load(vkCreateMacOSSurfaceMVK);
 #endif /* defined(VK_MVK_macos_surface) */
 #if defined(VK_NN_vi_surface)
-    lahar_load(lahar, vkCreateViSurfaceNN);
+    lahar_load(vkCreateViSurfaceNN);
 #endif /* defined(VK_NN_vi_surface) */
 #if defined(VK_NV_acquire_winrt_display)
-    lahar_load(lahar, vkAcquireWinrtDisplayNV);
-    lahar_load(lahar, vkGetWinrtDisplayNV);
+    lahar_load(vkAcquireWinrtDisplayNV);
+    lahar_load(vkGetWinrtDisplayNV);
 #endif /* defined(VK_NV_acquire_winrt_display) */
 #if defined(VK_NV_cooperative_matrix)
-    lahar_load(lahar, vkGetPhysicalDeviceCooperativeMatrixPropertiesNV);
+    lahar_load(vkGetPhysicalDeviceCooperativeMatrixPropertiesNV);
 #endif /* defined(VK_NV_cooperative_matrix) */
 #if defined(VK_NV_cooperative_matrix2)
-    lahar_load(lahar, vkGetPhysicalDeviceCooperativeMatrixFlexibleDimensionsPropertiesNV);
+    lahar_load(vkGetPhysicalDeviceCooperativeMatrixFlexibleDimensionsPropertiesNV);
 #endif /* defined(VK_NV_cooperative_matrix2) */
 #if defined(VK_NV_cooperative_vector)
-    lahar_load(lahar, vkGetPhysicalDeviceCooperativeVectorPropertiesNV);
+    lahar_load(vkGetPhysicalDeviceCooperativeVectorPropertiesNV);
 #endif /* defined(VK_NV_cooperative_vector) */
 #if defined(VK_NV_coverage_reduction_mode)
-    lahar_load(lahar, vkGetPhysicalDeviceSupportedFramebufferMixedSamplesCombinationsNV);
+    lahar_load(vkGetPhysicalDeviceSupportedFramebufferMixedSamplesCombinationsNV);
 #endif /* defined(VK_NV_coverage_reduction_mode) */
 #if defined(VK_NV_external_memory_capabilities)
-    lahar_load(lahar, vkGetPhysicalDeviceExternalImageFormatPropertiesNV);
+    lahar_load(vkGetPhysicalDeviceExternalImageFormatPropertiesNV);
 #endif /* defined(VK_NV_external_memory_capabilities) */
 #if defined(VK_NV_optical_flow)
-    lahar_load(lahar, vkGetPhysicalDeviceOpticalFlowImageFormatsNV);
+    lahar_load(vkGetPhysicalDeviceOpticalFlowImageFormatsNV);
 #endif /* defined(VK_NV_optical_flow) */
 #if defined(VK_OHOS_surface)
-    lahar_load(lahar, vkCreateSurfaceOHOS);
+    lahar_load(vkCreateSurfaceOHOS);
 #endif /* defined(VK_OHOS_surface) */
 #if defined(VK_QNX_screen_surface)
-    lahar_load(lahar, vkCreateScreenSurfaceQNX);
-    lahar_load(lahar, vkGetPhysicalDeviceScreenPresentationSupportQNX);
+    lahar_load(vkCreateScreenSurfaceQNX);
+    lahar_load(vkGetPhysicalDeviceScreenPresentationSupportQNX);
 #endif /* defined(VK_QNX_screen_surface) */
 #if (defined(VK_KHR_device_group) && defined(VK_KHR_surface)) || (defined(VK_KHR_swapchain) && defined(VK_VERSION_1_1))
-    lahar_load(lahar, vkGetPhysicalDevicePresentRectanglesKHR);
+    lahar_load(vkGetPhysicalDevicePresentRectanglesKHR);
 #endif /* (defined(VK_KHR_device_group) && defined(VK_KHR_surface)) || (defined(VK_KHR_swapchain) && defined(VK_VERSION_1_1)) */
 /* LAHAR_VK_LOAD_INSTANCE */
 
     return LAHAR_ERR_SUCCESS; 
 }
 
-static uint32_t lahar_load_device(Lahar* lahar, LaharLoaderFunc loadfn) {
+static uint32_t lahar_load_device(LaharLoaderFunc loadfn) {
 /* LAHAR_VK_LOAD_DEVICE */
 #if defined(VK_VERSION_1_0)
-    lahar_load(lahar, vkAllocateCommandBuffers);
-    lahar_load(lahar, vkAllocateDescriptorSets);
-    lahar_load(lahar, vkAllocateMemory);
-    lahar_load(lahar, vkBeginCommandBuffer);
-    lahar_load(lahar, vkBindBufferMemory);
-    lahar_load(lahar, vkBindImageMemory);
-    lahar_load(lahar, vkCmdBeginQuery);
-    lahar_load(lahar, vkCmdBeginRenderPass);
-    lahar_load(lahar, vkCmdBindDescriptorSets);
-    lahar_load(lahar, vkCmdBindIndexBuffer);
-    lahar_load(lahar, vkCmdBindPipeline);
-    lahar_load(lahar, vkCmdBindVertexBuffers);
-    lahar_load(lahar, vkCmdBlitImage);
-    lahar_load(lahar, vkCmdClearAttachments);
-    lahar_load(lahar, vkCmdClearColorImage);
-    lahar_load(lahar, vkCmdClearDepthStencilImage);
-    lahar_load(lahar, vkCmdCopyBuffer);
-    lahar_load(lahar, vkCmdCopyBufferToImage);
-    lahar_load(lahar, vkCmdCopyImage);
-    lahar_load(lahar, vkCmdCopyImageToBuffer);
-    lahar_load(lahar, vkCmdCopyQueryPoolResults);
-    lahar_load(lahar, vkCmdDispatch);
-    lahar_load(lahar, vkCmdDispatchIndirect);
-    lahar_load(lahar, vkCmdDraw);
-    lahar_load(lahar, vkCmdDrawIndexed);
-    lahar_load(lahar, vkCmdDrawIndexedIndirect);
-    lahar_load(lahar, vkCmdDrawIndirect);
-    lahar_load(lahar, vkCmdEndQuery);
-    lahar_load(lahar, vkCmdEndRenderPass);
-    lahar_load(lahar, vkCmdExecuteCommands);
-    lahar_load(lahar, vkCmdFillBuffer);
-    lahar_load(lahar, vkCmdNextSubpass);
-    lahar_load(lahar, vkCmdPipelineBarrier);
-    lahar_load(lahar, vkCmdPushConstants);
-    lahar_load(lahar, vkCmdResetEvent);
-    lahar_load(lahar, vkCmdResetQueryPool);
-    lahar_load(lahar, vkCmdResolveImage);
-    lahar_load(lahar, vkCmdSetBlendConstants);
-    lahar_load(lahar, vkCmdSetDepthBias);
-    lahar_load(lahar, vkCmdSetDepthBounds);
-    lahar_load(lahar, vkCmdSetEvent);
-    lahar_load(lahar, vkCmdSetLineWidth);
-    lahar_load(lahar, vkCmdSetScissor);
-    lahar_load(lahar, vkCmdSetStencilCompareMask);
-    lahar_load(lahar, vkCmdSetStencilReference);
-    lahar_load(lahar, vkCmdSetStencilWriteMask);
-    lahar_load(lahar, vkCmdSetViewport);
-    lahar_load(lahar, vkCmdUpdateBuffer);
-    lahar_load(lahar, vkCmdWaitEvents);
-    lahar_load(lahar, vkCmdWriteTimestamp);
-    lahar_load(lahar, vkCreateBuffer);
-    lahar_load(lahar, vkCreateBufferView);
-    lahar_load(lahar, vkCreateCommandPool);
-    lahar_load(lahar, vkCreateComputePipelines);
-    lahar_load(lahar, vkCreateDescriptorPool);
-    lahar_load(lahar, vkCreateDescriptorSetLayout);
-    lahar_load(lahar, vkCreateEvent);
-    lahar_load(lahar, vkCreateFence);
-    lahar_load(lahar, vkCreateFramebuffer);
-    lahar_load(lahar, vkCreateGraphicsPipelines);
-    lahar_load(lahar, vkCreateImage);
-    lahar_load(lahar, vkCreateImageView);
-    lahar_load(lahar, vkCreatePipelineCache);
-    lahar_load(lahar, vkCreatePipelineLayout);
-    lahar_load(lahar, vkCreateQueryPool);
-    lahar_load(lahar, vkCreateRenderPass);
-    lahar_load(lahar, vkCreateSampler);
-    lahar_load(lahar, vkCreateSemaphore);
-    lahar_load(lahar, vkCreateShaderModule);
-    lahar_load(lahar, vkDestroyBuffer);
-    lahar_load(lahar, vkDestroyBufferView);
-    lahar_load(lahar, vkDestroyCommandPool);
-    lahar_load(lahar, vkDestroyDescriptorPool);
-    lahar_load(lahar, vkDestroyDescriptorSetLayout);
-    lahar_load(lahar, vkDestroyDevice);
-    lahar_load(lahar, vkDestroyEvent);
-    lahar_load(lahar, vkDestroyFence);
-    lahar_load(lahar, vkDestroyFramebuffer);
-    lahar_load(lahar, vkDestroyImage);
-    lahar_load(lahar, vkDestroyImageView);
-    lahar_load(lahar, vkDestroyPipeline);
-    lahar_load(lahar, vkDestroyPipelineCache);
-    lahar_load(lahar, vkDestroyPipelineLayout);
-    lahar_load(lahar, vkDestroyQueryPool);
-    lahar_load(lahar, vkDestroyRenderPass);
-    lahar_load(lahar, vkDestroySampler);
-    lahar_load(lahar, vkDestroySemaphore);
-    lahar_load(lahar, vkDestroyShaderModule);
-    lahar_load(lahar, vkDeviceWaitIdle);
-    lahar_load(lahar, vkEndCommandBuffer);
-    lahar_load(lahar, vkFlushMappedMemoryRanges);
-    lahar_load(lahar, vkFreeCommandBuffers);
-    lahar_load(lahar, vkFreeDescriptorSets);
-    lahar_load(lahar, vkFreeMemory);
-    lahar_load(lahar, vkGetBufferMemoryRequirements);
-    lahar_load(lahar, vkGetDeviceMemoryCommitment);
-    lahar_load(lahar, vkGetDeviceQueue);
-    lahar_load(lahar, vkGetEventStatus);
-    lahar_load(lahar, vkGetFenceStatus);
-    lahar_load(lahar, vkGetImageMemoryRequirements);
-    lahar_load(lahar, vkGetImageSparseMemoryRequirements);
-    lahar_load(lahar, vkGetImageSubresourceLayout);
-    lahar_load(lahar, vkGetPipelineCacheData);
-    lahar_load(lahar, vkGetQueryPoolResults);
-    lahar_load(lahar, vkGetRenderAreaGranularity);
-    lahar_load(lahar, vkInvalidateMappedMemoryRanges);
-    lahar_load(lahar, vkMapMemory);
-    lahar_load(lahar, vkMergePipelineCaches);
-    lahar_load(lahar, vkQueueBindSparse);
-    lahar_load(lahar, vkQueueSubmit);
-    lahar_load(lahar, vkQueueWaitIdle);
-    lahar_load(lahar, vkResetCommandBuffer);
-    lahar_load(lahar, vkResetCommandPool);
-    lahar_load(lahar, vkResetDescriptorPool);
-    lahar_load(lahar, vkResetEvent);
-    lahar_load(lahar, vkResetFences);
-    lahar_load(lahar, vkSetEvent);
-    lahar_load(lahar, vkUnmapMemory);
-    lahar_load(lahar, vkUpdateDescriptorSets);
-    lahar_load(lahar, vkWaitForFences);
+    lahar_load(vkAllocateCommandBuffers);
+    lahar_load(vkAllocateDescriptorSets);
+    lahar_load(vkAllocateMemory);
+    lahar_load(vkBeginCommandBuffer);
+    lahar_load(vkBindBufferMemory);
+    lahar_load(vkBindImageMemory);
+    lahar_load(vkCmdBeginQuery);
+    lahar_load(vkCmdBeginRenderPass);
+    lahar_load(vkCmdBindDescriptorSets);
+    lahar_load(vkCmdBindIndexBuffer);
+    lahar_load(vkCmdBindPipeline);
+    lahar_load(vkCmdBindVertexBuffers);
+    lahar_load(vkCmdBlitImage);
+    lahar_load(vkCmdClearAttachments);
+    lahar_load(vkCmdClearColorImage);
+    lahar_load(vkCmdClearDepthStencilImage);
+    lahar_load(vkCmdCopyBuffer);
+    lahar_load(vkCmdCopyBufferToImage);
+    lahar_load(vkCmdCopyImage);
+    lahar_load(vkCmdCopyImageToBuffer);
+    lahar_load(vkCmdCopyQueryPoolResults);
+    lahar_load(vkCmdDispatch);
+    lahar_load(vkCmdDispatchIndirect);
+    lahar_load(vkCmdDraw);
+    lahar_load(vkCmdDrawIndexed);
+    lahar_load(vkCmdDrawIndexedIndirect);
+    lahar_load(vkCmdDrawIndirect);
+    lahar_load(vkCmdEndQuery);
+    lahar_load(vkCmdEndRenderPass);
+    lahar_load(vkCmdExecuteCommands);
+    lahar_load(vkCmdFillBuffer);
+    lahar_load(vkCmdNextSubpass);
+    lahar_load(vkCmdPipelineBarrier);
+    lahar_load(vkCmdPushConstants);
+    lahar_load(vkCmdResetEvent);
+    lahar_load(vkCmdResetQueryPool);
+    lahar_load(vkCmdResolveImage);
+    lahar_load(vkCmdSetBlendConstants);
+    lahar_load(vkCmdSetDepthBias);
+    lahar_load(vkCmdSetDepthBounds);
+    lahar_load(vkCmdSetEvent);
+    lahar_load(vkCmdSetLineWidth);
+    lahar_load(vkCmdSetScissor);
+    lahar_load(vkCmdSetStencilCompareMask);
+    lahar_load(vkCmdSetStencilReference);
+    lahar_load(vkCmdSetStencilWriteMask);
+    lahar_load(vkCmdSetViewport);
+    lahar_load(vkCmdUpdateBuffer);
+    lahar_load(vkCmdWaitEvents);
+    lahar_load(vkCmdWriteTimestamp);
+    lahar_load(vkCreateBuffer);
+    lahar_load(vkCreateBufferView);
+    lahar_load(vkCreateCommandPool);
+    lahar_load(vkCreateComputePipelines);
+    lahar_load(vkCreateDescriptorPool);
+    lahar_load(vkCreateDescriptorSetLayout);
+    lahar_load(vkCreateEvent);
+    lahar_load(vkCreateFence);
+    lahar_load(vkCreateFramebuffer);
+    lahar_load(vkCreateGraphicsPipelines);
+    lahar_load(vkCreateImage);
+    lahar_load(vkCreateImageView);
+    lahar_load(vkCreatePipelineCache);
+    lahar_load(vkCreatePipelineLayout);
+    lahar_load(vkCreateQueryPool);
+    lahar_load(vkCreateRenderPass);
+    lahar_load(vkCreateSampler);
+    lahar_load(vkCreateSemaphore);
+    lahar_load(vkCreateShaderModule);
+    lahar_load(vkDestroyBuffer);
+    lahar_load(vkDestroyBufferView);
+    lahar_load(vkDestroyCommandPool);
+    lahar_load(vkDestroyDescriptorPool);
+    lahar_load(vkDestroyDescriptorSetLayout);
+    lahar_load(vkDestroyDevice);
+    lahar_load(vkDestroyEvent);
+    lahar_load(vkDestroyFence);
+    lahar_load(vkDestroyFramebuffer);
+    lahar_load(vkDestroyImage);
+    lahar_load(vkDestroyImageView);
+    lahar_load(vkDestroyPipeline);
+    lahar_load(vkDestroyPipelineCache);
+    lahar_load(vkDestroyPipelineLayout);
+    lahar_load(vkDestroyQueryPool);
+    lahar_load(vkDestroyRenderPass);
+    lahar_load(vkDestroySampler);
+    lahar_load(vkDestroySemaphore);
+    lahar_load(vkDestroyShaderModule);
+    lahar_load(vkDeviceWaitIdle);
+    lahar_load(vkEndCommandBuffer);
+    lahar_load(vkFlushMappedMemoryRanges);
+    lahar_load(vkFreeCommandBuffers);
+    lahar_load(vkFreeDescriptorSets);
+    lahar_load(vkFreeMemory);
+    lahar_load(vkGetBufferMemoryRequirements);
+    lahar_load(vkGetDeviceMemoryCommitment);
+    lahar_load(vkGetDeviceQueue);
+    lahar_load(vkGetEventStatus);
+    lahar_load(vkGetFenceStatus);
+    lahar_load(vkGetImageMemoryRequirements);
+    lahar_load(vkGetImageSparseMemoryRequirements);
+    lahar_load(vkGetImageSubresourceLayout);
+    lahar_load(vkGetPipelineCacheData);
+    lahar_load(vkGetQueryPoolResults);
+    lahar_load(vkGetRenderAreaGranularity);
+    lahar_load(vkInvalidateMappedMemoryRanges);
+    lahar_load(vkMapMemory);
+    lahar_load(vkMergePipelineCaches);
+    lahar_load(vkQueueBindSparse);
+    lahar_load(vkQueueSubmit);
+    lahar_load(vkQueueWaitIdle);
+    lahar_load(vkResetCommandBuffer);
+    lahar_load(vkResetCommandPool);
+    lahar_load(vkResetDescriptorPool);
+    lahar_load(vkResetEvent);
+    lahar_load(vkResetFences);
+    lahar_load(vkSetEvent);
+    lahar_load(vkUnmapMemory);
+    lahar_load(vkUpdateDescriptorSets);
+    lahar_load(vkWaitForFences);
 #endif /* defined(VK_VERSION_1_0) */
 #if defined(VK_VERSION_1_1)
-    lahar_load(lahar, vkBindBufferMemory2);
-    lahar_load(lahar, vkBindImageMemory2);
-    lahar_load(lahar, vkCmdDispatchBase);
-    lahar_load(lahar, vkCmdSetDeviceMask);
-    lahar_load(lahar, vkCreateDescriptorUpdateTemplate);
-    lahar_load(lahar, vkCreateSamplerYcbcrConversion);
-    lahar_load(lahar, vkDestroyDescriptorUpdateTemplate);
-    lahar_load(lahar, vkDestroySamplerYcbcrConversion);
-    lahar_load(lahar, vkGetBufferMemoryRequirements2);
-    lahar_load(lahar, vkGetDescriptorSetLayoutSupport);
-    lahar_load(lahar, vkGetDeviceGroupPeerMemoryFeatures);
-    lahar_load(lahar, vkGetDeviceQueue2);
-    lahar_load(lahar, vkGetImageMemoryRequirements2);
-    lahar_load(lahar, vkGetImageSparseMemoryRequirements2);
-    lahar_load(lahar, vkTrimCommandPool);
-    lahar_load(lahar, vkUpdateDescriptorSetWithTemplate);
+    lahar_load(vkBindBufferMemory2);
+    lahar_load(vkBindImageMemory2);
+    lahar_load(vkCmdDispatchBase);
+    lahar_load(vkCmdSetDeviceMask);
+    lahar_load(vkCreateDescriptorUpdateTemplate);
+    lahar_load(vkCreateSamplerYcbcrConversion);
+    lahar_load(vkDestroyDescriptorUpdateTemplate);
+    lahar_load(vkDestroySamplerYcbcrConversion);
+    lahar_load(vkGetBufferMemoryRequirements2);
+    lahar_load(vkGetDescriptorSetLayoutSupport);
+    lahar_load(vkGetDeviceGroupPeerMemoryFeatures);
+    lahar_load(vkGetDeviceQueue2);
+    lahar_load(vkGetImageMemoryRequirements2);
+    lahar_load(vkGetImageSparseMemoryRequirements2);
+    lahar_load(vkTrimCommandPool);
+    lahar_load(vkUpdateDescriptorSetWithTemplate);
 #endif /* defined(VK_VERSION_1_1) */
 #if defined(VK_VERSION_1_2)
-    lahar_load(lahar, vkCmdBeginRenderPass2);
-    lahar_load(lahar, vkCmdDrawIndexedIndirectCount);
-    lahar_load(lahar, vkCmdDrawIndirectCount);
-    lahar_load(lahar, vkCmdEndRenderPass2);
-    lahar_load(lahar, vkCmdNextSubpass2);
-    lahar_load(lahar, vkCreateRenderPass2);
-    lahar_load(lahar, vkGetBufferDeviceAddress);
-    lahar_load(lahar, vkGetBufferOpaqueCaptureAddress);
-    lahar_load(lahar, vkGetDeviceMemoryOpaqueCaptureAddress);
-    lahar_load(lahar, vkGetSemaphoreCounterValue);
-    lahar_load(lahar, vkResetQueryPool);
-    lahar_load(lahar, vkSignalSemaphore);
-    lahar_load(lahar, vkWaitSemaphores);
+    lahar_load(vkCmdBeginRenderPass2);
+    lahar_load(vkCmdDrawIndexedIndirectCount);
+    lahar_load(vkCmdDrawIndirectCount);
+    lahar_load(vkCmdEndRenderPass2);
+    lahar_load(vkCmdNextSubpass2);
+    lahar_load(vkCreateRenderPass2);
+    lahar_load(vkGetBufferDeviceAddress);
+    lahar_load(vkGetBufferOpaqueCaptureAddress);
+    lahar_load(vkGetDeviceMemoryOpaqueCaptureAddress);
+    lahar_load(vkGetSemaphoreCounterValue);
+    lahar_load(vkResetQueryPool);
+    lahar_load(vkSignalSemaphore);
+    lahar_load(vkWaitSemaphores);
 #endif /* defined(VK_VERSION_1_2) */
 #if defined(VK_VERSION_1_3)
-    lahar_load(lahar, vkCmdBeginRendering);
-    lahar_load(lahar, vkCmdBindVertexBuffers2);
-    lahar_load(lahar, vkCmdBlitImage2);
-    lahar_load(lahar, vkCmdCopyBuffer2);
-    lahar_load(lahar, vkCmdCopyBufferToImage2);
-    lahar_load(lahar, vkCmdCopyImage2);
-    lahar_load(lahar, vkCmdCopyImageToBuffer2);
-    lahar_load(lahar, vkCmdEndRendering);
-    lahar_load(lahar, vkCmdPipelineBarrier2);
-    lahar_load(lahar, vkCmdResetEvent2);
-    lahar_load(lahar, vkCmdResolveImage2);
-    lahar_load(lahar, vkCmdSetCullMode);
-    lahar_load(lahar, vkCmdSetDepthBiasEnable);
-    lahar_load(lahar, vkCmdSetDepthBoundsTestEnable);
-    lahar_load(lahar, vkCmdSetDepthCompareOp);
-    lahar_load(lahar, vkCmdSetDepthTestEnable);
-    lahar_load(lahar, vkCmdSetDepthWriteEnable);
-    lahar_load(lahar, vkCmdSetEvent2);
-    lahar_load(lahar, vkCmdSetFrontFace);
-    lahar_load(lahar, vkCmdSetPrimitiveRestartEnable);
-    lahar_load(lahar, vkCmdSetPrimitiveTopology);
-    lahar_load(lahar, vkCmdSetRasterizerDiscardEnable);
-    lahar_load(lahar, vkCmdSetScissorWithCount);
-    lahar_load(lahar, vkCmdSetStencilOp);
-    lahar_load(lahar, vkCmdSetStencilTestEnable);
-    lahar_load(lahar, vkCmdSetViewportWithCount);
-    lahar_load(lahar, vkCmdWaitEvents2);
-    lahar_load(lahar, vkCmdWriteTimestamp2);
-    lahar_load(lahar, vkCreatePrivateDataSlot);
-    lahar_load(lahar, vkDestroyPrivateDataSlot);
-    lahar_load(lahar, vkGetDeviceBufferMemoryRequirements);
-    lahar_load(lahar, vkGetDeviceImageMemoryRequirements);
-    lahar_load(lahar, vkGetDeviceImageSparseMemoryRequirements);
-    lahar_load(lahar, vkGetPrivateData);
-    lahar_load(lahar, vkQueueSubmit2);
-    lahar_load(lahar, vkSetPrivateData);
+    lahar_load(vkCmdBeginRendering);
+    lahar_load(vkCmdBindVertexBuffers2);
+    lahar_load(vkCmdBlitImage2);
+    lahar_load(vkCmdCopyBuffer2);
+    lahar_load(vkCmdCopyBufferToImage2);
+    lahar_load(vkCmdCopyImage2);
+    lahar_load(vkCmdCopyImageToBuffer2);
+    lahar_load(vkCmdEndRendering);
+    lahar_load(vkCmdPipelineBarrier2);
+    lahar_load(vkCmdResetEvent2);
+    lahar_load(vkCmdResolveImage2);
+    lahar_load(vkCmdSetCullMode);
+    lahar_load(vkCmdSetDepthBiasEnable);
+    lahar_load(vkCmdSetDepthBoundsTestEnable);
+    lahar_load(vkCmdSetDepthCompareOp);
+    lahar_load(vkCmdSetDepthTestEnable);
+    lahar_load(vkCmdSetDepthWriteEnable);
+    lahar_load(vkCmdSetEvent2);
+    lahar_load(vkCmdSetFrontFace);
+    lahar_load(vkCmdSetPrimitiveRestartEnable);
+    lahar_load(vkCmdSetPrimitiveTopology);
+    lahar_load(vkCmdSetRasterizerDiscardEnable);
+    lahar_load(vkCmdSetScissorWithCount);
+    lahar_load(vkCmdSetStencilOp);
+    lahar_load(vkCmdSetStencilTestEnable);
+    lahar_load(vkCmdSetViewportWithCount);
+    lahar_load(vkCmdWaitEvents2);
+    lahar_load(vkCmdWriteTimestamp2);
+    lahar_load(vkCreatePrivateDataSlot);
+    lahar_load(vkDestroyPrivateDataSlot);
+    lahar_load(vkGetDeviceBufferMemoryRequirements);
+    lahar_load(vkGetDeviceImageMemoryRequirements);
+    lahar_load(vkGetDeviceImageSparseMemoryRequirements);
+    lahar_load(vkGetPrivateData);
+    lahar_load(vkQueueSubmit2);
+    lahar_load(vkSetPrivateData);
 #endif /* defined(VK_VERSION_1_3) */
 #if defined(VK_VERSION_1_4)
-    lahar_load(lahar, vkCmdBindDescriptorSets2);
-    lahar_load(lahar, vkCmdBindIndexBuffer2);
-    lahar_load(lahar, vkCmdPushConstants2);
-    lahar_load(lahar, vkCmdPushDescriptorSet);
-    lahar_load(lahar, vkCmdPushDescriptorSet2);
-    lahar_load(lahar, vkCmdPushDescriptorSetWithTemplate);
-    lahar_load(lahar, vkCmdPushDescriptorSetWithTemplate2);
-    lahar_load(lahar, vkCmdSetLineStipple);
-    lahar_load(lahar, vkCmdSetRenderingAttachmentLocations);
-    lahar_load(lahar, vkCmdSetRenderingInputAttachmentIndices);
-    lahar_load(lahar, vkCopyImageToImage);
-    lahar_load(lahar, vkCopyImageToMemory);
-    lahar_load(lahar, vkCopyMemoryToImage);
-    lahar_load(lahar, vkGetDeviceImageSubresourceLayout);
-    lahar_load(lahar, vkGetImageSubresourceLayout2);
-    lahar_load(lahar, vkGetRenderingAreaGranularity);
-    lahar_load(lahar, vkMapMemory2);
-    lahar_load(lahar, vkTransitionImageLayout);
-    lahar_load(lahar, vkUnmapMemory2);
+    lahar_load(vkCmdBindDescriptorSets2);
+    lahar_load(vkCmdBindIndexBuffer2);
+    lahar_load(vkCmdPushConstants2);
+    lahar_load(vkCmdPushDescriptorSet);
+    lahar_load(vkCmdPushDescriptorSet2);
+    lahar_load(vkCmdPushDescriptorSetWithTemplate);
+    lahar_load(vkCmdPushDescriptorSetWithTemplate2);
+    lahar_load(vkCmdSetLineStipple);
+    lahar_load(vkCmdSetRenderingAttachmentLocations);
+    lahar_load(vkCmdSetRenderingInputAttachmentIndices);
+    lahar_load(vkCopyImageToImage);
+    lahar_load(vkCopyImageToMemory);
+    lahar_load(vkCopyMemoryToImage);
+    lahar_load(vkGetDeviceImageSubresourceLayout);
+    lahar_load(vkGetImageSubresourceLayout2);
+    lahar_load(vkGetRenderingAreaGranularity);
+    lahar_load(vkMapMemory2);
+    lahar_load(vkTransitionImageLayout);
+    lahar_load(vkUnmapMemory2);
 #endif /* defined(VK_VERSION_1_4) */
 #if defined(VK_AMDX_shader_enqueue)
-    lahar_load(lahar, vkCmdDispatchGraphAMDX);
-    lahar_load(lahar, vkCmdDispatchGraphIndirectAMDX);
-    lahar_load(lahar, vkCmdDispatchGraphIndirectCountAMDX);
-    lahar_load(lahar, vkCmdInitializeGraphScratchMemoryAMDX);
-    lahar_load(lahar, vkCreateExecutionGraphPipelinesAMDX);
-    lahar_load(lahar, vkGetExecutionGraphPipelineNodeIndexAMDX);
-    lahar_load(lahar, vkGetExecutionGraphPipelineScratchSizeAMDX);
+    lahar_load(vkCmdDispatchGraphAMDX);
+    lahar_load(vkCmdDispatchGraphIndirectAMDX);
+    lahar_load(vkCmdDispatchGraphIndirectCountAMDX);
+    lahar_load(vkCmdInitializeGraphScratchMemoryAMDX);
+    lahar_load(vkCreateExecutionGraphPipelinesAMDX);
+    lahar_load(vkGetExecutionGraphPipelineNodeIndexAMDX);
+    lahar_load(vkGetExecutionGraphPipelineScratchSizeAMDX);
 #endif /* defined(VK_AMDX_shader_enqueue) */
 #if defined(VK_AMD_anti_lag)
-    lahar_load(lahar, vkAntiLagUpdateAMD);
+    lahar_load(vkAntiLagUpdateAMD);
 #endif /* defined(VK_AMD_anti_lag) */
 #if defined(VK_AMD_buffer_marker)
-    lahar_load(lahar, vkCmdWriteBufferMarkerAMD);
+    lahar_load(vkCmdWriteBufferMarkerAMD);
 #endif /* defined(VK_AMD_buffer_marker) */
 #if defined(VK_AMD_buffer_marker) && (defined(VK_VERSION_1_3) || defined(VK_KHR_synchronization2))
-    lahar_load(lahar, vkCmdWriteBufferMarker2AMD);
+    lahar_load(vkCmdWriteBufferMarker2AMD);
 #endif /* defined(VK_AMD_buffer_marker) && (defined(VK_VERSION_1_3) || defined(VK_KHR_synchronization2)) */
 #if defined(VK_AMD_display_native_hdr)
-    lahar_load(lahar, vkSetLocalDimmingAMD);
+    lahar_load(vkSetLocalDimmingAMD);
 #endif /* defined(VK_AMD_display_native_hdr) */
 #if defined(VK_AMD_draw_indirect_count)
-    lahar_load(lahar, vkCmdDrawIndexedIndirectCountAMD);
-    lahar_load(lahar, vkCmdDrawIndirectCountAMD);
+    lahar_load(vkCmdDrawIndexedIndirectCountAMD);
+    lahar_load(vkCmdDrawIndirectCountAMD);
 #endif /* defined(VK_AMD_draw_indirect_count) */
 #if defined(VK_AMD_shader_info)
-    lahar_load(lahar, vkGetShaderInfoAMD);
+    lahar_load(vkGetShaderInfoAMD);
 #endif /* defined(VK_AMD_shader_info) */
 #if defined(VK_ANDROID_external_memory_android_hardware_buffer)
-    lahar_load(lahar, vkGetAndroidHardwareBufferPropertiesANDROID);
-    lahar_load(lahar, vkGetMemoryAndroidHardwareBufferANDROID);
+    lahar_load(vkGetAndroidHardwareBufferPropertiesANDROID);
+    lahar_load(vkGetMemoryAndroidHardwareBufferANDROID);
 #endif /* defined(VK_ANDROID_external_memory_android_hardware_buffer) */
 #if defined(VK_ARM_data_graph)
-    lahar_load(lahar, vkBindDataGraphPipelineSessionMemoryARM);
-    lahar_load(lahar, vkCmdDispatchDataGraphARM);
-    lahar_load(lahar, vkCreateDataGraphPipelineSessionARM);
-    lahar_load(lahar, vkCreateDataGraphPipelinesARM);
-    lahar_load(lahar, vkDestroyDataGraphPipelineSessionARM);
-    lahar_load(lahar, vkGetDataGraphPipelineAvailablePropertiesARM);
-    lahar_load(lahar, vkGetDataGraphPipelinePropertiesARM);
-    lahar_load(lahar, vkGetDataGraphPipelineSessionBindPointRequirementsARM);
-    lahar_load(lahar, vkGetDataGraphPipelineSessionMemoryRequirementsARM);
+    lahar_load(vkBindDataGraphPipelineSessionMemoryARM);
+    lahar_load(vkCmdDispatchDataGraphARM);
+    lahar_load(vkCreateDataGraphPipelineSessionARM);
+    lahar_load(vkCreateDataGraphPipelinesARM);
+    lahar_load(vkDestroyDataGraphPipelineSessionARM);
+    lahar_load(vkGetDataGraphPipelineAvailablePropertiesARM);
+    lahar_load(vkGetDataGraphPipelinePropertiesARM);
+    lahar_load(vkGetDataGraphPipelineSessionBindPointRequirementsARM);
+    lahar_load(vkGetDataGraphPipelineSessionMemoryRequirementsARM);
 #endif /* defined(VK_ARM_data_graph) */
 #if defined(VK_ARM_tensors)
-    lahar_load(lahar, vkBindTensorMemoryARM);
-    lahar_load(lahar, vkCmdCopyTensorARM);
-    lahar_load(lahar, vkCreateTensorARM);
-    lahar_load(lahar, vkCreateTensorViewARM);
-    lahar_load(lahar, vkDestroyTensorARM);
-    lahar_load(lahar, vkDestroyTensorViewARM);
-    lahar_load(lahar, vkGetDeviceTensorMemoryRequirementsARM);
-    lahar_load(lahar, vkGetTensorMemoryRequirementsARM);
+    lahar_load(vkBindTensorMemoryARM);
+    lahar_load(vkCmdCopyTensorARM);
+    lahar_load(vkCreateTensorARM);
+    lahar_load(vkCreateTensorViewARM);
+    lahar_load(vkDestroyTensorARM);
+    lahar_load(vkDestroyTensorViewARM);
+    lahar_load(vkGetDeviceTensorMemoryRequirementsARM);
+    lahar_load(vkGetTensorMemoryRequirementsARM);
 #endif /* defined(VK_ARM_tensors) */
 #if defined(VK_ARM_tensors) && defined(VK_EXT_descriptor_buffer)
-    lahar_load(lahar, vkGetTensorOpaqueCaptureDescriptorDataARM);
-    lahar_load(lahar, vkGetTensorViewOpaqueCaptureDescriptorDataARM);
+    lahar_load(vkGetTensorOpaqueCaptureDescriptorDataARM);
+    lahar_load(vkGetTensorViewOpaqueCaptureDescriptorDataARM);
 #endif /* defined(VK_ARM_tensors) && defined(VK_EXT_descriptor_buffer) */
 #if defined(VK_EXT_attachment_feedback_loop_dynamic_state)
-    lahar_load(lahar, vkCmdSetAttachmentFeedbackLoopEnableEXT);
+    lahar_load(vkCmdSetAttachmentFeedbackLoopEnableEXT);
 #endif /* defined(VK_EXT_attachment_feedback_loop_dynamic_state) */
 #if defined(VK_EXT_buffer_device_address)
-    lahar_load(lahar, vkGetBufferDeviceAddressEXT);
+    lahar_load(vkGetBufferDeviceAddressEXT);
 #endif /* defined(VK_EXT_buffer_device_address) */
 #if defined(VK_EXT_calibrated_timestamps)
-    lahar_load(lahar, vkGetCalibratedTimestampsEXT);
+    lahar_load(vkGetCalibratedTimestampsEXT);
 #endif /* defined(VK_EXT_calibrated_timestamps) */
 #if defined(VK_EXT_color_write_enable)
-    lahar_load(lahar, vkCmdSetColorWriteEnableEXT);
+    lahar_load(vkCmdSetColorWriteEnableEXT);
 #endif /* defined(VK_EXT_color_write_enable) */
 #if defined(VK_EXT_conditional_rendering)
-    lahar_load(lahar, vkCmdBeginConditionalRenderingEXT);
-    lahar_load(lahar, vkCmdEndConditionalRenderingEXT);
+    lahar_load(vkCmdBeginConditionalRenderingEXT);
+    lahar_load(vkCmdEndConditionalRenderingEXT);
 #endif /* defined(VK_EXT_conditional_rendering) */
 #if defined(VK_EXT_debug_marker)
-    lahar_load(lahar, vkCmdDebugMarkerBeginEXT);
-    lahar_load(lahar, vkCmdDebugMarkerEndEXT);
-    lahar_load(lahar, vkCmdDebugMarkerInsertEXT);
-    lahar_load(lahar, vkDebugMarkerSetObjectNameEXT);
-    lahar_load(lahar, vkDebugMarkerSetObjectTagEXT);
+    lahar_load(vkCmdDebugMarkerBeginEXT);
+    lahar_load(vkCmdDebugMarkerEndEXT);
+    lahar_load(vkCmdDebugMarkerInsertEXT);
+    lahar_load(vkDebugMarkerSetObjectNameEXT);
+    lahar_load(vkDebugMarkerSetObjectTagEXT);
 #endif /* defined(VK_EXT_debug_marker) */
 #if defined(VK_EXT_depth_bias_control)
-    lahar_load(lahar, vkCmdSetDepthBias2EXT);
+    lahar_load(vkCmdSetDepthBias2EXT);
 #endif /* defined(VK_EXT_depth_bias_control) */
 #if defined(VK_EXT_descriptor_buffer)
-    lahar_load(lahar, vkCmdBindDescriptorBufferEmbeddedSamplersEXT);
-    lahar_load(lahar, vkCmdBindDescriptorBuffersEXT);
-    lahar_load(lahar, vkCmdSetDescriptorBufferOffsetsEXT);
-    lahar_load(lahar, vkGetBufferOpaqueCaptureDescriptorDataEXT);
-    lahar_load(lahar, vkGetDescriptorEXT);
-    lahar_load(lahar, vkGetDescriptorSetLayoutBindingOffsetEXT);
-    lahar_load(lahar, vkGetDescriptorSetLayoutSizeEXT);
-    lahar_load(lahar, vkGetImageOpaqueCaptureDescriptorDataEXT);
-    lahar_load(lahar, vkGetImageViewOpaqueCaptureDescriptorDataEXT);
-    lahar_load(lahar, vkGetSamplerOpaqueCaptureDescriptorDataEXT);
+    lahar_load(vkCmdBindDescriptorBufferEmbeddedSamplersEXT);
+    lahar_load(vkCmdBindDescriptorBuffersEXT);
+    lahar_load(vkCmdSetDescriptorBufferOffsetsEXT);
+    lahar_load(vkGetBufferOpaqueCaptureDescriptorDataEXT);
+    lahar_load(vkGetDescriptorEXT);
+    lahar_load(vkGetDescriptorSetLayoutBindingOffsetEXT);
+    lahar_load(vkGetDescriptorSetLayoutSizeEXT);
+    lahar_load(vkGetImageOpaqueCaptureDescriptorDataEXT);
+    lahar_load(vkGetImageViewOpaqueCaptureDescriptorDataEXT);
+    lahar_load(vkGetSamplerOpaqueCaptureDescriptorDataEXT);
 #endif /* defined(VK_EXT_descriptor_buffer) */
 #if defined(VK_EXT_descriptor_buffer) && (defined(VK_KHR_acceleration_structure) || defined(VK_NV_ray_tracing))
-    lahar_load(lahar, vkGetAccelerationStructureOpaqueCaptureDescriptorDataEXT);
+    lahar_load(vkGetAccelerationStructureOpaqueCaptureDescriptorDataEXT);
 #endif /* defined(VK_EXT_descriptor_buffer) && (defined(VK_KHR_acceleration_structure) || defined(VK_NV_ray_tracing)) */
 #if defined(VK_EXT_device_fault)
-    lahar_load(lahar, vkGetDeviceFaultInfoEXT);
+    lahar_load(vkGetDeviceFaultInfoEXT);
 #endif /* defined(VK_EXT_device_fault) */
 #if defined(VK_EXT_device_generated_commands)
-    lahar_load(lahar, vkCmdExecuteGeneratedCommandsEXT);
-    lahar_load(lahar, vkCmdPreprocessGeneratedCommandsEXT);
-    lahar_load(lahar, vkCreateIndirectCommandsLayoutEXT);
-    lahar_load(lahar, vkCreateIndirectExecutionSetEXT);
-    lahar_load(lahar, vkDestroyIndirectCommandsLayoutEXT);
-    lahar_load(lahar, vkDestroyIndirectExecutionSetEXT);
-    lahar_load(lahar, vkGetGeneratedCommandsMemoryRequirementsEXT);
-    lahar_load(lahar, vkUpdateIndirectExecutionSetPipelineEXT);
-    lahar_load(lahar, vkUpdateIndirectExecutionSetShaderEXT);
+    lahar_load(vkCmdExecuteGeneratedCommandsEXT);
+    lahar_load(vkCmdPreprocessGeneratedCommandsEXT);
+    lahar_load(vkCreateIndirectCommandsLayoutEXT);
+    lahar_load(vkCreateIndirectExecutionSetEXT);
+    lahar_load(vkDestroyIndirectCommandsLayoutEXT);
+    lahar_load(vkDestroyIndirectExecutionSetEXT);
+    lahar_load(vkGetGeneratedCommandsMemoryRequirementsEXT);
+    lahar_load(vkUpdateIndirectExecutionSetPipelineEXT);
+    lahar_load(vkUpdateIndirectExecutionSetShaderEXT);
 #endif /* defined(VK_EXT_device_generated_commands) */
 #if defined(VK_EXT_discard_rectangles)
-    lahar_load(lahar, vkCmdSetDiscardRectangleEXT);
+    lahar_load(vkCmdSetDiscardRectangleEXT);
 #endif /* defined(VK_EXT_discard_rectangles) */
 #if defined(VK_EXT_discard_rectangles) && VK_EXT_DISCARD_RECTANGLES_SPEC_VERSION >= 2
-    lahar_load(lahar, vkCmdSetDiscardRectangleEnableEXT);
-    lahar_load(lahar, vkCmdSetDiscardRectangleModeEXT);
+    lahar_load(vkCmdSetDiscardRectangleEnableEXT);
+    lahar_load(vkCmdSetDiscardRectangleModeEXT);
 #endif /* defined(VK_EXT_discard_rectangles) && VK_EXT_DISCARD_RECTANGLES_SPEC_VERSION >= 2 */
 #if defined(VK_EXT_display_control)
-    lahar_load(lahar, vkDisplayPowerControlEXT);
-    lahar_load(lahar, vkGetSwapchainCounterEXT);
-    lahar_load(lahar, vkRegisterDeviceEventEXT);
-    lahar_load(lahar, vkRegisterDisplayEventEXT);
+    lahar_load(vkDisplayPowerControlEXT);
+    lahar_load(vkGetSwapchainCounterEXT);
+    lahar_load(vkRegisterDeviceEventEXT);
+    lahar_load(vkRegisterDisplayEventEXT);
 #endif /* defined(VK_EXT_display_control) */
 #if defined(VK_EXT_external_memory_host)
-    lahar_load(lahar, vkGetMemoryHostPointerPropertiesEXT);
+    lahar_load(vkGetMemoryHostPointerPropertiesEXT);
 #endif /* defined(VK_EXT_external_memory_host) */
 #if defined(VK_EXT_external_memory_metal)
-    lahar_load(lahar, vkGetMemoryMetalHandleEXT);
-    lahar_load(lahar, vkGetMemoryMetalHandlePropertiesEXT);
+    lahar_load(vkGetMemoryMetalHandleEXT);
+    lahar_load(vkGetMemoryMetalHandlePropertiesEXT);
 #endif /* defined(VK_EXT_external_memory_metal) */
 #if defined(VK_EXT_fragment_density_map_offset)
-    lahar_load(lahar, vkCmdEndRendering2EXT);
+    lahar_load(vkCmdEndRendering2EXT);
 #endif /* defined(VK_EXT_fragment_density_map_offset) */
 #if defined(VK_EXT_full_screen_exclusive)
-    lahar_load(lahar, vkAcquireFullScreenExclusiveModeEXT);
-    lahar_load(lahar, vkReleaseFullScreenExclusiveModeEXT);
+    lahar_load(vkAcquireFullScreenExclusiveModeEXT);
+    lahar_load(vkReleaseFullScreenExclusiveModeEXT);
 #endif /* defined(VK_EXT_full_screen_exclusive) */
 #if defined(VK_EXT_full_screen_exclusive) && (defined(VK_KHR_device_group) || defined(VK_VERSION_1_1))
-    lahar_load(lahar, vkGetDeviceGroupSurfacePresentModes2EXT);
+    lahar_load(vkGetDeviceGroupSurfacePresentModes2EXT);
 #endif /* defined(VK_EXT_full_screen_exclusive) && (defined(VK_KHR_device_group) || defined(VK_VERSION_1_1)) */
 #if defined(VK_EXT_hdr_metadata)
-    lahar_load(lahar, vkSetHdrMetadataEXT);
+    lahar_load(vkSetHdrMetadataEXT);
 #endif /* defined(VK_EXT_hdr_metadata) */
 #if defined(VK_EXT_host_image_copy)
-    lahar_load(lahar, vkCopyImageToImageEXT);
-    lahar_load(lahar, vkCopyImageToMemoryEXT);
-    lahar_load(lahar, vkCopyMemoryToImageEXT);
-    lahar_load(lahar, vkTransitionImageLayoutEXT);
+    lahar_load(vkCopyImageToImageEXT);
+    lahar_load(vkCopyImageToMemoryEXT);
+    lahar_load(vkCopyMemoryToImageEXT);
+    lahar_load(vkTransitionImageLayoutEXT);
 #endif /* defined(VK_EXT_host_image_copy) */
 #if defined(VK_EXT_host_query_reset)
-    lahar_load(lahar, vkResetQueryPoolEXT);
+    lahar_load(vkResetQueryPoolEXT);
 #endif /* defined(VK_EXT_host_query_reset) */
 #if defined(VK_EXT_image_drm_format_modifier)
-    lahar_load(lahar, vkGetImageDrmFormatModifierPropertiesEXT);
+    lahar_load(vkGetImageDrmFormatModifierPropertiesEXT);
 #endif /* defined(VK_EXT_image_drm_format_modifier) */
 #if defined(VK_EXT_line_rasterization)
-    lahar_load(lahar, vkCmdSetLineStippleEXT);
+    lahar_load(vkCmdSetLineStippleEXT);
 #endif /* defined(VK_EXT_line_rasterization) */
 #if defined(VK_EXT_mesh_shader)
-    lahar_load(lahar, vkCmdDrawMeshTasksEXT);
-    lahar_load(lahar, vkCmdDrawMeshTasksIndirectEXT);
+    lahar_load(vkCmdDrawMeshTasksEXT);
+    lahar_load(vkCmdDrawMeshTasksIndirectEXT);
 #endif /* defined(VK_EXT_mesh_shader) */
 #if defined(VK_EXT_mesh_shader) && (defined(VK_KHR_draw_indirect_count) || defined(VK_VERSION_1_2))
-    lahar_load(lahar, vkCmdDrawMeshTasksIndirectCountEXT);
+    lahar_load(vkCmdDrawMeshTasksIndirectCountEXT);
 #endif /* defined(VK_EXT_mesh_shader) && (defined(VK_KHR_draw_indirect_count) || defined(VK_VERSION_1_2)) */
 #if defined(VK_EXT_metal_objects)
-    lahar_load(lahar, vkExportMetalObjectsEXT);
+    lahar_load(vkExportMetalObjectsEXT);
 #endif /* defined(VK_EXT_metal_objects) */
 #if defined(VK_EXT_multi_draw)
-    lahar_load(lahar, vkCmdDrawMultiEXT);
-    lahar_load(lahar, vkCmdDrawMultiIndexedEXT);
+    lahar_load(vkCmdDrawMultiEXT);
+    lahar_load(vkCmdDrawMultiIndexedEXT);
 #endif /* defined(VK_EXT_multi_draw) */
 #if defined(VK_EXT_opacity_micromap)
-    lahar_load(lahar, vkBuildMicromapsEXT);
-    lahar_load(lahar, vkCmdBuildMicromapsEXT);
-    lahar_load(lahar, vkCmdCopyMemoryToMicromapEXT);
-    lahar_load(lahar, vkCmdCopyMicromapEXT);
-    lahar_load(lahar, vkCmdCopyMicromapToMemoryEXT);
-    lahar_load(lahar, vkCmdWriteMicromapsPropertiesEXT);
-    lahar_load(lahar, vkCopyMemoryToMicromapEXT);
-    lahar_load(lahar, vkCopyMicromapEXT);
-    lahar_load(lahar, vkCopyMicromapToMemoryEXT);
-    lahar_load(lahar, vkCreateMicromapEXT);
-    lahar_load(lahar, vkDestroyMicromapEXT);
-    lahar_load(lahar, vkGetDeviceMicromapCompatibilityEXT);
-    lahar_load(lahar, vkGetMicromapBuildSizesEXT);
-    lahar_load(lahar, vkWriteMicromapsPropertiesEXT);
+    lahar_load(vkBuildMicromapsEXT);
+    lahar_load(vkCmdBuildMicromapsEXT);
+    lahar_load(vkCmdCopyMemoryToMicromapEXT);
+    lahar_load(vkCmdCopyMicromapEXT);
+    lahar_load(vkCmdCopyMicromapToMemoryEXT);
+    lahar_load(vkCmdWriteMicromapsPropertiesEXT);
+    lahar_load(vkCopyMemoryToMicromapEXT);
+    lahar_load(vkCopyMicromapEXT);
+    lahar_load(vkCopyMicromapToMemoryEXT);
+    lahar_load(vkCreateMicromapEXT);
+    lahar_load(vkDestroyMicromapEXT);
+    lahar_load(vkGetDeviceMicromapCompatibilityEXT);
+    lahar_load(vkGetMicromapBuildSizesEXT);
+    lahar_load(vkWriteMicromapsPropertiesEXT);
 #endif /* defined(VK_EXT_opacity_micromap) */
 #if defined(VK_EXT_pageable_device_local_memory)
-    lahar_load(lahar, vkSetDeviceMemoryPriorityEXT);
+    lahar_load(vkSetDeviceMemoryPriorityEXT);
 #endif /* defined(VK_EXT_pageable_device_local_memory) */
 #if defined(VK_EXT_pipeline_properties)
-    lahar_load(lahar, vkGetPipelinePropertiesEXT);
+    lahar_load(vkGetPipelinePropertiesEXT);
 #endif /* defined(VK_EXT_pipeline_properties) */
 #if defined(VK_EXT_private_data)
-    lahar_load(lahar, vkCreatePrivateDataSlotEXT);
-    lahar_load(lahar, vkDestroyPrivateDataSlotEXT);
-    lahar_load(lahar, vkGetPrivateDataEXT);
-    lahar_load(lahar, vkSetPrivateDataEXT);
+    lahar_load(vkCreatePrivateDataSlotEXT);
+    lahar_load(vkDestroyPrivateDataSlotEXT);
+    lahar_load(vkGetPrivateDataEXT);
+    lahar_load(vkSetPrivateDataEXT);
 #endif /* defined(VK_EXT_private_data) */
 #if defined(VK_EXT_sample_locations)
-    lahar_load(lahar, vkCmdSetSampleLocationsEXT);
+    lahar_load(vkCmdSetSampleLocationsEXT);
 #endif /* defined(VK_EXT_sample_locations) */
 #if defined(VK_EXT_shader_module_identifier)
-    lahar_load(lahar, vkGetShaderModuleCreateInfoIdentifierEXT);
-    lahar_load(lahar, vkGetShaderModuleIdentifierEXT);
+    lahar_load(vkGetShaderModuleCreateInfoIdentifierEXT);
+    lahar_load(vkGetShaderModuleIdentifierEXT);
 #endif /* defined(VK_EXT_shader_module_identifier) */
 #if defined(VK_EXT_shader_object)
-    lahar_load(lahar, vkCmdBindShadersEXT);
-    lahar_load(lahar, vkCreateShadersEXT);
-    lahar_load(lahar, vkDestroyShaderEXT);
-    lahar_load(lahar, vkGetShaderBinaryDataEXT);
+    lahar_load(vkCmdBindShadersEXT);
+    lahar_load(vkCreateShadersEXT);
+    lahar_load(vkDestroyShaderEXT);
+    lahar_load(vkGetShaderBinaryDataEXT);
 #endif /* defined(VK_EXT_shader_object) */
 #if defined(VK_EXT_swapchain_maintenance1)
-    lahar_load(lahar, vkReleaseSwapchainImagesEXT);
+    lahar_load(vkReleaseSwapchainImagesEXT);
 #endif /* defined(VK_EXT_swapchain_maintenance1) */
 #if defined(VK_EXT_transform_feedback)
-    lahar_load(lahar, vkCmdBeginQueryIndexedEXT);
-    lahar_load(lahar, vkCmdBeginTransformFeedbackEXT);
-    lahar_load(lahar, vkCmdBindTransformFeedbackBuffersEXT);
-    lahar_load(lahar, vkCmdDrawIndirectByteCountEXT);
-    lahar_load(lahar, vkCmdEndQueryIndexedEXT);
-    lahar_load(lahar, vkCmdEndTransformFeedbackEXT);
+    lahar_load(vkCmdBeginQueryIndexedEXT);
+    lahar_load(vkCmdBeginTransformFeedbackEXT);
+    lahar_load(vkCmdBindTransformFeedbackBuffersEXT);
+    lahar_load(vkCmdDrawIndirectByteCountEXT);
+    lahar_load(vkCmdEndQueryIndexedEXT);
+    lahar_load(vkCmdEndTransformFeedbackEXT);
 #endif /* defined(VK_EXT_transform_feedback) */
 #if defined(VK_EXT_validation_cache)
-    lahar_load(lahar, vkCreateValidationCacheEXT);
-    lahar_load(lahar, vkDestroyValidationCacheEXT);
-    lahar_load(lahar, vkGetValidationCacheDataEXT);
-    lahar_load(lahar, vkMergeValidationCachesEXT);
+    lahar_load(vkCreateValidationCacheEXT);
+    lahar_load(vkDestroyValidationCacheEXT);
+    lahar_load(vkGetValidationCacheDataEXT);
+    lahar_load(vkMergeValidationCachesEXT);
 #endif /* defined(VK_EXT_validation_cache) */
 #if defined(VK_FUCHSIA_buffer_collection)
-    lahar_load(lahar, vkCreateBufferCollectionFUCHSIA);
-    lahar_load(lahar, vkDestroyBufferCollectionFUCHSIA);
-    lahar_load(lahar, vkGetBufferCollectionPropertiesFUCHSIA);
-    lahar_load(lahar, vkSetBufferCollectionBufferConstraintsFUCHSIA);
-    lahar_load(lahar, vkSetBufferCollectionImageConstraintsFUCHSIA);
+    lahar_load(vkCreateBufferCollectionFUCHSIA);
+    lahar_load(vkDestroyBufferCollectionFUCHSIA);
+    lahar_load(vkGetBufferCollectionPropertiesFUCHSIA);
+    lahar_load(vkSetBufferCollectionBufferConstraintsFUCHSIA);
+    lahar_load(vkSetBufferCollectionImageConstraintsFUCHSIA);
 #endif /* defined(VK_FUCHSIA_buffer_collection) */
 #if defined(VK_FUCHSIA_external_memory)
-    lahar_load(lahar, vkGetMemoryZirconHandleFUCHSIA);
-    lahar_load(lahar, vkGetMemoryZirconHandlePropertiesFUCHSIA);
+    lahar_load(vkGetMemoryZirconHandleFUCHSIA);
+    lahar_load(vkGetMemoryZirconHandlePropertiesFUCHSIA);
 #endif /* defined(VK_FUCHSIA_external_memory) */
 #if defined(VK_FUCHSIA_external_semaphore)
-    lahar_load(lahar, vkGetSemaphoreZirconHandleFUCHSIA);
-    lahar_load(lahar, vkImportSemaphoreZirconHandleFUCHSIA);
+    lahar_load(vkGetSemaphoreZirconHandleFUCHSIA);
+    lahar_load(vkImportSemaphoreZirconHandleFUCHSIA);
 #endif /* defined(VK_FUCHSIA_external_semaphore) */
 #if defined(VK_GOOGLE_display_timing)
-    lahar_load(lahar, vkGetPastPresentationTimingGOOGLE);
-    lahar_load(lahar, vkGetRefreshCycleDurationGOOGLE);
+    lahar_load(vkGetPastPresentationTimingGOOGLE);
+    lahar_load(vkGetRefreshCycleDurationGOOGLE);
 #endif /* defined(VK_GOOGLE_display_timing) */
 #if defined(VK_HUAWEI_cluster_culling_shader)
-    lahar_load(lahar, vkCmdDrawClusterHUAWEI);
-    lahar_load(lahar, vkCmdDrawClusterIndirectHUAWEI);
+    lahar_load(vkCmdDrawClusterHUAWEI);
+    lahar_load(vkCmdDrawClusterIndirectHUAWEI);
 #endif /* defined(VK_HUAWEI_cluster_culling_shader) */
 #if defined(VK_HUAWEI_invocation_mask)
-    lahar_load(lahar, vkCmdBindInvocationMaskHUAWEI);
+    lahar_load(vkCmdBindInvocationMaskHUAWEI);
 #endif /* defined(VK_HUAWEI_invocation_mask) */
 #if defined(VK_HUAWEI_subpass_shading) && VK_HUAWEI_SUBPASS_SHADING_SPEC_VERSION >= 2
-    lahar_load(lahar, vkGetDeviceSubpassShadingMaxWorkgroupSizeHUAWEI);
+    lahar_load(vkGetDeviceSubpassShadingMaxWorkgroupSizeHUAWEI);
 #endif /* defined(VK_HUAWEI_subpass_shading) && VK_HUAWEI_SUBPASS_SHADING_SPEC_VERSION >= 2 */
 #if defined(VK_HUAWEI_subpass_shading)
-    lahar_load(lahar, vkCmdSubpassShadingHUAWEI);
+    lahar_load(vkCmdSubpassShadingHUAWEI);
 #endif /* defined(VK_HUAWEI_subpass_shading) */
 #if defined(VK_INTEL_performance_query)
-    lahar_load(lahar, vkAcquirePerformanceConfigurationINTEL);
-    lahar_load(lahar, vkCmdSetPerformanceMarkerINTEL);
-    lahar_load(lahar, vkCmdSetPerformanceOverrideINTEL);
-    lahar_load(lahar, vkCmdSetPerformanceStreamMarkerINTEL);
-    lahar_load(lahar, vkGetPerformanceParameterINTEL);
-    lahar_load(lahar, vkInitializePerformanceApiINTEL);
-    lahar_load(lahar, vkQueueSetPerformanceConfigurationINTEL);
-    lahar_load(lahar, vkReleasePerformanceConfigurationINTEL);
-    lahar_load(lahar, vkUninitializePerformanceApiINTEL);
+    lahar_load(vkAcquirePerformanceConfigurationINTEL);
+    lahar_load(vkCmdSetPerformanceMarkerINTEL);
+    lahar_load(vkCmdSetPerformanceOverrideINTEL);
+    lahar_load(vkCmdSetPerformanceStreamMarkerINTEL);
+    lahar_load(vkGetPerformanceParameterINTEL);
+    lahar_load(vkInitializePerformanceApiINTEL);
+    lahar_load(vkQueueSetPerformanceConfigurationINTEL);
+    lahar_load(vkReleasePerformanceConfigurationINTEL);
+    lahar_load(vkUninitializePerformanceApiINTEL);
 #endif /* defined(VK_INTEL_performance_query) */
 #if defined(VK_KHR_acceleration_structure)
-    lahar_load(lahar, vkBuildAccelerationStructuresKHR);
-    lahar_load(lahar, vkCmdBuildAccelerationStructuresIndirectKHR);
-    lahar_load(lahar, vkCmdBuildAccelerationStructuresKHR);
-    lahar_load(lahar, vkCmdCopyAccelerationStructureKHR);
-    lahar_load(lahar, vkCmdCopyAccelerationStructureToMemoryKHR);
-    lahar_load(lahar, vkCmdCopyMemoryToAccelerationStructureKHR);
-    lahar_load(lahar, vkCmdWriteAccelerationStructuresPropertiesKHR);
-    lahar_load(lahar, vkCopyAccelerationStructureKHR);
-    lahar_load(lahar, vkCopyAccelerationStructureToMemoryKHR);
-    lahar_load(lahar, vkCopyMemoryToAccelerationStructureKHR);
-    lahar_load(lahar, vkCreateAccelerationStructureKHR);
-    lahar_load(lahar, vkDestroyAccelerationStructureKHR);
-    lahar_load(lahar, vkGetAccelerationStructureBuildSizesKHR);
-    lahar_load(lahar, vkGetAccelerationStructureDeviceAddressKHR);
-    lahar_load(lahar, vkGetDeviceAccelerationStructureCompatibilityKHR);
-    lahar_load(lahar, vkWriteAccelerationStructuresPropertiesKHR);
+    lahar_load(vkBuildAccelerationStructuresKHR);
+    lahar_load(vkCmdBuildAccelerationStructuresIndirectKHR);
+    lahar_load(vkCmdBuildAccelerationStructuresKHR);
+    lahar_load(vkCmdCopyAccelerationStructureKHR);
+    lahar_load(vkCmdCopyAccelerationStructureToMemoryKHR);
+    lahar_load(vkCmdCopyMemoryToAccelerationStructureKHR);
+    lahar_load(vkCmdWriteAccelerationStructuresPropertiesKHR);
+    lahar_load(vkCopyAccelerationStructureKHR);
+    lahar_load(vkCopyAccelerationStructureToMemoryKHR);
+    lahar_load(vkCopyMemoryToAccelerationStructureKHR);
+    lahar_load(vkCreateAccelerationStructureKHR);
+    lahar_load(vkDestroyAccelerationStructureKHR);
+    lahar_load(vkGetAccelerationStructureBuildSizesKHR);
+    lahar_load(vkGetAccelerationStructureDeviceAddressKHR);
+    lahar_load(vkGetDeviceAccelerationStructureCompatibilityKHR);
+    lahar_load(vkWriteAccelerationStructuresPropertiesKHR);
 #endif /* defined(VK_KHR_acceleration_structure) */
 #if defined(VK_KHR_bind_memory2)
-    lahar_load(lahar, vkBindBufferMemory2KHR);
-    lahar_load(lahar, vkBindImageMemory2KHR);
+    lahar_load(vkBindBufferMemory2KHR);
+    lahar_load(vkBindImageMemory2KHR);
 #endif /* defined(VK_KHR_bind_memory2) */
 #if defined(VK_KHR_buffer_device_address)
-    lahar_load(lahar, vkGetBufferDeviceAddressKHR);
-    lahar_load(lahar, vkGetBufferOpaqueCaptureAddressKHR);
-    lahar_load(lahar, vkGetDeviceMemoryOpaqueCaptureAddressKHR);
+    lahar_load(vkGetBufferDeviceAddressKHR);
+    lahar_load(vkGetBufferOpaqueCaptureAddressKHR);
+    lahar_load(vkGetDeviceMemoryOpaqueCaptureAddressKHR);
 #endif /* defined(VK_KHR_buffer_device_address) */
 #if defined(VK_KHR_calibrated_timestamps)
-    lahar_load(lahar, vkGetCalibratedTimestampsKHR);
+    lahar_load(vkGetCalibratedTimestampsKHR);
 #endif /* defined(VK_KHR_calibrated_timestamps) */
 #if defined(VK_KHR_copy_commands2)
-    lahar_load(lahar, vkCmdBlitImage2KHR);
-    lahar_load(lahar, vkCmdCopyBuffer2KHR);
-    lahar_load(lahar, vkCmdCopyBufferToImage2KHR);
-    lahar_load(lahar, vkCmdCopyImage2KHR);
-    lahar_load(lahar, vkCmdCopyImageToBuffer2KHR);
-    lahar_load(lahar, vkCmdResolveImage2KHR);
+    lahar_load(vkCmdBlitImage2KHR);
+    lahar_load(vkCmdCopyBuffer2KHR);
+    lahar_load(vkCmdCopyBufferToImage2KHR);
+    lahar_load(vkCmdCopyImage2KHR);
+    lahar_load(vkCmdCopyImageToBuffer2KHR);
+    lahar_load(vkCmdResolveImage2KHR);
 #endif /* defined(VK_KHR_copy_commands2) */
 #if defined(VK_KHR_create_renderpass2)
-    lahar_load(lahar, vkCmdBeginRenderPass2KHR);
-    lahar_load(lahar, vkCmdEndRenderPass2KHR);
-    lahar_load(lahar, vkCmdNextSubpass2KHR);
-    lahar_load(lahar, vkCreateRenderPass2KHR);
+    lahar_load(vkCmdBeginRenderPass2KHR);
+    lahar_load(vkCmdEndRenderPass2KHR);
+    lahar_load(vkCmdNextSubpass2KHR);
+    lahar_load(vkCreateRenderPass2KHR);
 #endif /* defined(VK_KHR_create_renderpass2) */
 #if defined(VK_KHR_deferred_host_operations)
-    lahar_load(lahar, vkCreateDeferredOperationKHR);
-    lahar_load(lahar, vkDeferredOperationJoinKHR);
-    lahar_load(lahar, vkDestroyDeferredOperationKHR);
-    lahar_load(lahar, vkGetDeferredOperationMaxConcurrencyKHR);
-    lahar_load(lahar, vkGetDeferredOperationResultKHR);
+    lahar_load(vkCreateDeferredOperationKHR);
+    lahar_load(vkDeferredOperationJoinKHR);
+    lahar_load(vkDestroyDeferredOperationKHR);
+    lahar_load(vkGetDeferredOperationMaxConcurrencyKHR);
+    lahar_load(vkGetDeferredOperationResultKHR);
 #endif /* defined(VK_KHR_deferred_host_operations) */
 #if defined(VK_KHR_descriptor_update_template)
-    lahar_load(lahar, vkCreateDescriptorUpdateTemplateKHR);
-    lahar_load(lahar, vkDestroyDescriptorUpdateTemplateKHR);
-    lahar_load(lahar, vkUpdateDescriptorSetWithTemplateKHR);
+    lahar_load(vkCreateDescriptorUpdateTemplateKHR);
+    lahar_load(vkDestroyDescriptorUpdateTemplateKHR);
+    lahar_load(vkUpdateDescriptorSetWithTemplateKHR);
 #endif /* defined(VK_KHR_descriptor_update_template) */
 #if defined(VK_KHR_device_group)
-    lahar_load(lahar, vkCmdDispatchBaseKHR);
-    lahar_load(lahar, vkCmdSetDeviceMaskKHR);
-    lahar_load(lahar, vkGetDeviceGroupPeerMemoryFeaturesKHR);
+    lahar_load(vkCmdDispatchBaseKHR);
+    lahar_load(vkCmdSetDeviceMaskKHR);
+    lahar_load(vkGetDeviceGroupPeerMemoryFeaturesKHR);
 #endif /* defined(VK_KHR_device_group) */
 #if defined(VK_KHR_display_swapchain)
-    lahar_load(lahar, vkCreateSharedSwapchainsKHR);
+    lahar_load(vkCreateSharedSwapchainsKHR);
 #endif /* defined(VK_KHR_display_swapchain) */
 #if defined(VK_KHR_draw_indirect_count)
-    lahar_load(lahar, vkCmdDrawIndexedIndirectCountKHR);
-    lahar_load(lahar, vkCmdDrawIndirectCountKHR);
+    lahar_load(vkCmdDrawIndexedIndirectCountKHR);
+    lahar_load(vkCmdDrawIndirectCountKHR);
 #endif /* defined(VK_KHR_draw_indirect_count) */
 #if defined(VK_KHR_dynamic_rendering)
-    lahar_load(lahar, vkCmdBeginRenderingKHR);
-    lahar_load(lahar, vkCmdEndRenderingKHR);
+    lahar_load(vkCmdBeginRenderingKHR);
+    lahar_load(vkCmdEndRenderingKHR);
 #endif /* defined(VK_KHR_dynamic_rendering) */
 #if defined(VK_KHR_dynamic_rendering_local_read)
-    lahar_load(lahar, vkCmdSetRenderingAttachmentLocationsKHR);
-    lahar_load(lahar, vkCmdSetRenderingInputAttachmentIndicesKHR);
+    lahar_load(vkCmdSetRenderingAttachmentLocationsKHR);
+    lahar_load(vkCmdSetRenderingInputAttachmentIndicesKHR);
 #endif /* defined(VK_KHR_dynamic_rendering_local_read) */
 #if defined(VK_KHR_external_fence_fd)
-    lahar_load(lahar, vkGetFenceFdKHR);
-    lahar_load(lahar, vkImportFenceFdKHR);
+    lahar_load(vkGetFenceFdKHR);
+    lahar_load(vkImportFenceFdKHR);
 #endif /* defined(VK_KHR_external_fence_fd) */
 #if defined(VK_KHR_external_fence_win32)
-    lahar_load(lahar, vkGetFenceWin32HandleKHR);
-    lahar_load(lahar, vkImportFenceWin32HandleKHR);
+    lahar_load(vkGetFenceWin32HandleKHR);
+    lahar_load(vkImportFenceWin32HandleKHR);
 #endif /* defined(VK_KHR_external_fence_win32) */
 #if defined(VK_KHR_external_memory_fd)
-    lahar_load(lahar, vkGetMemoryFdKHR);
-    lahar_load(lahar, vkGetMemoryFdPropertiesKHR);
+    lahar_load(vkGetMemoryFdKHR);
+    lahar_load(vkGetMemoryFdPropertiesKHR);
 #endif /* defined(VK_KHR_external_memory_fd) */
 #if defined(VK_KHR_external_memory_win32)
-    lahar_load(lahar, vkGetMemoryWin32HandleKHR);
-    lahar_load(lahar, vkGetMemoryWin32HandlePropertiesKHR);
+    lahar_load(vkGetMemoryWin32HandleKHR);
+    lahar_load(vkGetMemoryWin32HandlePropertiesKHR);
 #endif /* defined(VK_KHR_external_memory_win32) */
 #if defined(VK_KHR_external_semaphore_fd)
-    lahar_load(lahar, vkGetSemaphoreFdKHR);
-    lahar_load(lahar, vkImportSemaphoreFdKHR);
+    lahar_load(vkGetSemaphoreFdKHR);
+    lahar_load(vkImportSemaphoreFdKHR);
 #endif /* defined(VK_KHR_external_semaphore_fd) */
 #if defined(VK_KHR_external_semaphore_win32)
-    lahar_load(lahar, vkGetSemaphoreWin32HandleKHR);
-    lahar_load(lahar, vkImportSemaphoreWin32HandleKHR);
+    lahar_load(vkGetSemaphoreWin32HandleKHR);
+    lahar_load(vkImportSemaphoreWin32HandleKHR);
 #endif /* defined(VK_KHR_external_semaphore_win32) */
 #if defined(VK_KHR_fragment_shading_rate)
-    lahar_load(lahar, vkCmdSetFragmentShadingRateKHR);
+    lahar_load(vkCmdSetFragmentShadingRateKHR);
 #endif /* defined(VK_KHR_fragment_shading_rate) */
 #if defined(VK_KHR_get_memory_requirements2)
-    lahar_load(lahar, vkGetBufferMemoryRequirements2KHR);
-    lahar_load(lahar, vkGetImageMemoryRequirements2KHR);
-    lahar_load(lahar, vkGetImageSparseMemoryRequirements2KHR);
+    lahar_load(vkGetBufferMemoryRequirements2KHR);
+    lahar_load(vkGetImageMemoryRequirements2KHR);
+    lahar_load(vkGetImageSparseMemoryRequirements2KHR);
 #endif /* defined(VK_KHR_get_memory_requirements2) */
 #if defined(VK_KHR_line_rasterization)
-    lahar_load(lahar, vkCmdSetLineStippleKHR);
+    lahar_load(vkCmdSetLineStippleKHR);
 #endif /* defined(VK_KHR_line_rasterization) */
 #if defined(VK_KHR_maintenance1)
-    lahar_load(lahar, vkTrimCommandPoolKHR);
+    lahar_load(vkTrimCommandPoolKHR);
 #endif /* defined(VK_KHR_maintenance1) */
 #if defined(VK_KHR_maintenance3)
-    lahar_load(lahar, vkGetDescriptorSetLayoutSupportKHR);
+    lahar_load(vkGetDescriptorSetLayoutSupportKHR);
 #endif /* defined(VK_KHR_maintenance3) */
 #if defined(VK_KHR_maintenance4)
-    lahar_load(lahar, vkGetDeviceBufferMemoryRequirementsKHR);
-    lahar_load(lahar, vkGetDeviceImageMemoryRequirementsKHR);
-    lahar_load(lahar, vkGetDeviceImageSparseMemoryRequirementsKHR);
+    lahar_load(vkGetDeviceBufferMemoryRequirementsKHR);
+    lahar_load(vkGetDeviceImageMemoryRequirementsKHR);
+    lahar_load(vkGetDeviceImageSparseMemoryRequirementsKHR);
 #endif /* defined(VK_KHR_maintenance4) */
 #if defined(VK_KHR_maintenance5)
-    lahar_load(lahar, vkCmdBindIndexBuffer2KHR);
-    lahar_load(lahar, vkGetDeviceImageSubresourceLayoutKHR);
-    lahar_load(lahar, vkGetImageSubresourceLayout2KHR);
-    lahar_load(lahar, vkGetRenderingAreaGranularityKHR);
+    lahar_load(vkCmdBindIndexBuffer2KHR);
+    lahar_load(vkGetDeviceImageSubresourceLayoutKHR);
+    lahar_load(vkGetImageSubresourceLayout2KHR);
+    lahar_load(vkGetRenderingAreaGranularityKHR);
 #endif /* defined(VK_KHR_maintenance5) */
 #if defined(VK_KHR_maintenance6)
-    lahar_load(lahar, vkCmdBindDescriptorSets2KHR);
-    lahar_load(lahar, vkCmdPushConstants2KHR);
+    lahar_load(vkCmdBindDescriptorSets2KHR);
+    lahar_load(vkCmdPushConstants2KHR);
 #endif /* defined(VK_KHR_maintenance6) */
 #if defined(VK_KHR_maintenance6) && defined(VK_KHR_push_descriptor)
-    lahar_load(lahar, vkCmdPushDescriptorSet2KHR);
-    lahar_load(lahar, vkCmdPushDescriptorSetWithTemplate2KHR);
+    lahar_load(vkCmdPushDescriptorSet2KHR);
+    lahar_load(vkCmdPushDescriptorSetWithTemplate2KHR);
 #endif /* defined(VK_KHR_maintenance6) && defined(VK_KHR_push_descriptor) */
 #if defined(VK_KHR_maintenance6) && defined(VK_EXT_descriptor_buffer)
-    lahar_load(lahar, vkCmdBindDescriptorBufferEmbeddedSamplers2EXT);
-    lahar_load(lahar, vkCmdSetDescriptorBufferOffsets2EXT);
+    lahar_load(vkCmdBindDescriptorBufferEmbeddedSamplers2EXT);
+    lahar_load(vkCmdSetDescriptorBufferOffsets2EXT);
 #endif /* defined(VK_KHR_maintenance6) && defined(VK_EXT_descriptor_buffer) */
 #if defined(VK_KHR_map_memory2)
-    lahar_load(lahar, vkMapMemory2KHR);
-    lahar_load(lahar, vkUnmapMemory2KHR);
+    lahar_load(vkMapMemory2KHR);
+    lahar_load(vkUnmapMemory2KHR);
 #endif /* defined(VK_KHR_map_memory2) */
 #if defined(VK_KHR_performance_query)
-    lahar_load(lahar, vkAcquireProfilingLockKHR);
-    lahar_load(lahar, vkReleaseProfilingLockKHR);
+    lahar_load(vkAcquireProfilingLockKHR);
+    lahar_load(vkReleaseProfilingLockKHR);
 #endif /* defined(VK_KHR_performance_query) */
 #if defined(VK_KHR_pipeline_binary)
-    lahar_load(lahar, vkCreatePipelineBinariesKHR);
-    lahar_load(lahar, vkDestroyPipelineBinaryKHR);
-    lahar_load(lahar, vkGetPipelineBinaryDataKHR);
-    lahar_load(lahar, vkGetPipelineKeyKHR);
-    lahar_load(lahar, vkReleaseCapturedPipelineDataKHR);
+    lahar_load(vkCreatePipelineBinariesKHR);
+    lahar_load(vkDestroyPipelineBinaryKHR);
+    lahar_load(vkGetPipelineBinaryDataKHR);
+    lahar_load(vkGetPipelineKeyKHR);
+    lahar_load(vkReleaseCapturedPipelineDataKHR);
 #endif /* defined(VK_KHR_pipeline_binary) */
 #if defined(VK_KHR_pipeline_executable_properties)
-    lahar_load(lahar, vkGetPipelineExecutableInternalRepresentationsKHR);
-    lahar_load(lahar, vkGetPipelineExecutablePropertiesKHR);
-    lahar_load(lahar, vkGetPipelineExecutableStatisticsKHR);
+    lahar_load(vkGetPipelineExecutableInternalRepresentationsKHR);
+    lahar_load(vkGetPipelineExecutablePropertiesKHR);
+    lahar_load(vkGetPipelineExecutableStatisticsKHR);
 #endif /* defined(VK_KHR_pipeline_executable_properties) */
 #if defined(VK_KHR_present_wait)
-    lahar_load(lahar, vkWaitForPresentKHR);
+    lahar_load(vkWaitForPresentKHR);
 #endif /* defined(VK_KHR_present_wait) */
 #if defined(VK_KHR_present_wait2)
-    lahar_load(lahar, vkWaitForPresent2KHR);
+    lahar_load(vkWaitForPresent2KHR);
 #endif /* defined(VK_KHR_present_wait2) */
 #if defined(VK_KHR_push_descriptor)
-    lahar_load(lahar, vkCmdPushDescriptorSetKHR);
+    lahar_load(vkCmdPushDescriptorSetKHR);
 #endif /* defined(VK_KHR_push_descriptor) */
 #if defined(VK_KHR_ray_tracing_maintenance1) && defined(VK_KHR_ray_tracing_pipeline)
-    lahar_load(lahar, vkCmdTraceRaysIndirect2KHR);
+    lahar_load(vkCmdTraceRaysIndirect2KHR);
 #endif /* defined(VK_KHR_ray_tracing_maintenance1) && defined(VK_KHR_ray_tracing_pipeline) */
 #if defined(VK_KHR_ray_tracing_pipeline)
-    lahar_load(lahar, vkCmdSetRayTracingPipelineStackSizeKHR);
-    lahar_load(lahar, vkCmdTraceRaysIndirectKHR);
-    lahar_load(lahar, vkCmdTraceRaysKHR);
-    lahar_load(lahar, vkCreateRayTracingPipelinesKHR);
-    lahar_load(lahar, vkGetRayTracingCaptureReplayShaderGroupHandlesKHR);
-    lahar_load(lahar, vkGetRayTracingShaderGroupHandlesKHR);
-    lahar_load(lahar, vkGetRayTracingShaderGroupStackSizeKHR);
+    lahar_load(vkCmdSetRayTracingPipelineStackSizeKHR);
+    lahar_load(vkCmdTraceRaysIndirectKHR);
+    lahar_load(vkCmdTraceRaysKHR);
+    lahar_load(vkCreateRayTracingPipelinesKHR);
+    lahar_load(vkGetRayTracingCaptureReplayShaderGroupHandlesKHR);
+    lahar_load(vkGetRayTracingShaderGroupHandlesKHR);
+    lahar_load(vkGetRayTracingShaderGroupStackSizeKHR);
 #endif /* defined(VK_KHR_ray_tracing_pipeline) */
 #if defined(VK_KHR_sampler_ycbcr_conversion)
-    lahar_load(lahar, vkCreateSamplerYcbcrConversionKHR);
-    lahar_load(lahar, vkDestroySamplerYcbcrConversionKHR);
+    lahar_load(vkCreateSamplerYcbcrConversionKHR);
+    lahar_load(vkDestroySamplerYcbcrConversionKHR);
 #endif /* defined(VK_KHR_sampler_ycbcr_conversion) */
 #if defined(VK_KHR_shared_presentable_image)
-    lahar_load(lahar, vkGetSwapchainStatusKHR);
+    lahar_load(vkGetSwapchainStatusKHR);
 #endif /* defined(VK_KHR_shared_presentable_image) */
 #if defined(VK_KHR_swapchain)
-    lahar_load(lahar, vkAcquireNextImageKHR);
-    lahar_load(lahar, vkCreateSwapchainKHR);
-    lahar_load(lahar, vkDestroySwapchainKHR);
-    lahar_load(lahar, vkGetSwapchainImagesKHR);
-    lahar_load(lahar, vkQueuePresentKHR);
+    lahar_load(vkAcquireNextImageKHR);
+    lahar_load(vkCreateSwapchainKHR);
+    lahar_load(vkDestroySwapchainKHR);
+    lahar_load(vkGetSwapchainImagesKHR);
+    lahar_load(vkQueuePresentKHR);
 #endif /* defined(VK_KHR_swapchain) */
 #if defined(VK_KHR_swapchain_maintenance1)
-    lahar_load(lahar, vkReleaseSwapchainImagesKHR);
+    lahar_load(vkReleaseSwapchainImagesKHR);
 #endif /* defined(VK_KHR_swapchain_maintenance1) */
 #if defined(VK_KHR_synchronization2)
-    lahar_load(lahar, vkCmdPipelineBarrier2KHR);
-    lahar_load(lahar, vkCmdResetEvent2KHR);
-    lahar_load(lahar, vkCmdSetEvent2KHR);
-    lahar_load(lahar, vkCmdWaitEvents2KHR);
-    lahar_load(lahar, vkCmdWriteTimestamp2KHR);
-    lahar_load(lahar, vkQueueSubmit2KHR);
+    lahar_load(vkCmdPipelineBarrier2KHR);
+    lahar_load(vkCmdResetEvent2KHR);
+    lahar_load(vkCmdSetEvent2KHR);
+    lahar_load(vkCmdWaitEvents2KHR);
+    lahar_load(vkCmdWriteTimestamp2KHR);
+    lahar_load(vkQueueSubmit2KHR);
 #endif /* defined(VK_KHR_synchronization2) */
 #if defined(VK_KHR_timeline_semaphore)
-    lahar_load(lahar, vkGetSemaphoreCounterValueKHR);
-    lahar_load(lahar, vkSignalSemaphoreKHR);
-    lahar_load(lahar, vkWaitSemaphoresKHR);
+    lahar_load(vkGetSemaphoreCounterValueKHR);
+    lahar_load(vkSignalSemaphoreKHR);
+    lahar_load(vkWaitSemaphoresKHR);
 #endif /* defined(VK_KHR_timeline_semaphore) */
 #if defined(VK_KHR_video_decode_queue)
-    lahar_load(lahar, vkCmdDecodeVideoKHR);
+    lahar_load(vkCmdDecodeVideoKHR);
 #endif /* defined(VK_KHR_video_decode_queue) */
 #if defined(VK_KHR_video_encode_queue)
-    lahar_load(lahar, vkCmdEncodeVideoKHR);
-    lahar_load(lahar, vkGetEncodedVideoSessionParametersKHR);
+    lahar_load(vkCmdEncodeVideoKHR);
+    lahar_load(vkGetEncodedVideoSessionParametersKHR);
 #endif /* defined(VK_KHR_video_encode_queue) */
 #if defined(VK_KHR_video_queue)
-    lahar_load(lahar, vkBindVideoSessionMemoryKHR);
-    lahar_load(lahar, vkCmdBeginVideoCodingKHR);
-    lahar_load(lahar, vkCmdControlVideoCodingKHR);
-    lahar_load(lahar, vkCmdEndVideoCodingKHR);
-    lahar_load(lahar, vkCreateVideoSessionKHR);
-    lahar_load(lahar, vkCreateVideoSessionParametersKHR);
-    lahar_load(lahar, vkDestroyVideoSessionKHR);
-    lahar_load(lahar, vkDestroyVideoSessionParametersKHR);
-    lahar_load(lahar, vkGetVideoSessionMemoryRequirementsKHR);
-    lahar_load(lahar, vkUpdateVideoSessionParametersKHR);
+    lahar_load(vkBindVideoSessionMemoryKHR);
+    lahar_load(vkCmdBeginVideoCodingKHR);
+    lahar_load(vkCmdControlVideoCodingKHR);
+    lahar_load(vkCmdEndVideoCodingKHR);
+    lahar_load(vkCreateVideoSessionKHR);
+    lahar_load(vkCreateVideoSessionParametersKHR);
+    lahar_load(vkDestroyVideoSessionKHR);
+    lahar_load(vkDestroyVideoSessionParametersKHR);
+    lahar_load(vkGetVideoSessionMemoryRequirementsKHR);
+    lahar_load(vkUpdateVideoSessionParametersKHR);
 #endif /* defined(VK_KHR_video_queue) */
 #if defined(VK_NVX_binary_import)
-    lahar_load(lahar, vkCmdCuLaunchKernelNVX);
-    lahar_load(lahar, vkCreateCuFunctionNVX);
-    lahar_load(lahar, vkCreateCuModuleNVX);
-    lahar_load(lahar, vkDestroyCuFunctionNVX);
-    lahar_load(lahar, vkDestroyCuModuleNVX);
+    lahar_load(vkCmdCuLaunchKernelNVX);
+    lahar_load(vkCreateCuFunctionNVX);
+    lahar_load(vkCreateCuModuleNVX);
+    lahar_load(vkDestroyCuFunctionNVX);
+    lahar_load(vkDestroyCuModuleNVX);
 #endif /* defined(VK_NVX_binary_import) */
 #if defined(VK_NVX_image_view_handle)
-    lahar_load(lahar, vkGetImageViewHandleNVX);
+    lahar_load(vkGetImageViewHandleNVX);
 #endif /* defined(VK_NVX_image_view_handle) */
 #if defined(VK_NVX_image_view_handle) && VK_NVX_IMAGE_VIEW_HANDLE_SPEC_VERSION >= 3
-    lahar_load(lahar, vkGetImageViewHandle64NVX);
+    lahar_load(vkGetImageViewHandle64NVX);
 #endif /* defined(VK_NVX_image_view_handle) && VK_NVX_IMAGE_VIEW_HANDLE_SPEC_VERSION >= 3 */
 #if defined(VK_NVX_image_view_handle) && VK_NVX_IMAGE_VIEW_HANDLE_SPEC_VERSION >= 2
-    lahar_load(lahar, vkGetImageViewAddressNVX);
+    lahar_load(vkGetImageViewAddressNVX);
 #endif /* defined(VK_NVX_image_view_handle) && VK_NVX_IMAGE_VIEW_HANDLE_SPEC_VERSION >= 2 */
 #if defined(VK_NV_clip_space_w_scaling)
-    lahar_load(lahar, vkCmdSetViewportWScalingNV);
+    lahar_load(vkCmdSetViewportWScalingNV);
 #endif /* defined(VK_NV_clip_space_w_scaling) */
 #if defined(VK_NV_cluster_acceleration_structure)
-    lahar_load(lahar, vkCmdBuildClusterAccelerationStructureIndirectNV);
-    lahar_load(lahar, vkGetClusterAccelerationStructureBuildSizesNV);
+    lahar_load(vkCmdBuildClusterAccelerationStructureIndirectNV);
+    lahar_load(vkGetClusterAccelerationStructureBuildSizesNV);
 #endif /* defined(VK_NV_cluster_acceleration_structure) */
 #if defined(VK_NV_cooperative_vector)
-    lahar_load(lahar, vkCmdConvertCooperativeVectorMatrixNV);
-    lahar_load(lahar, vkConvertCooperativeVectorMatrixNV);
+    lahar_load(vkCmdConvertCooperativeVectorMatrixNV);
+    lahar_load(vkConvertCooperativeVectorMatrixNV);
 #endif /* defined(VK_NV_cooperative_vector) */
 #if defined(VK_NV_copy_memory_indirect)
-    lahar_load(lahar, vkCmdCopyMemoryIndirectNV);
-    lahar_load(lahar, vkCmdCopyMemoryToImageIndirectNV);
+    lahar_load(vkCmdCopyMemoryIndirectNV);
+    lahar_load(vkCmdCopyMemoryToImageIndirectNV);
 #endif /* defined(VK_NV_copy_memory_indirect) */
 #if defined(VK_NV_cuda_kernel_launch)
-    lahar_load(lahar, vkCmdCudaLaunchKernelNV);
-    lahar_load(lahar, vkCreateCudaFunctionNV);
-    lahar_load(lahar, vkCreateCudaModuleNV);
-    lahar_load(lahar, vkDestroyCudaFunctionNV);
-    lahar_load(lahar, vkDestroyCudaModuleNV);
-    lahar_load(lahar, vkGetCudaModuleCacheNV);
+    lahar_load(vkCmdCudaLaunchKernelNV);
+    lahar_load(vkCreateCudaFunctionNV);
+    lahar_load(vkCreateCudaModuleNV);
+    lahar_load(vkDestroyCudaFunctionNV);
+    lahar_load(vkDestroyCudaModuleNV);
+    lahar_load(vkGetCudaModuleCacheNV);
 #endif /* defined(VK_NV_cuda_kernel_launch) */
 #if defined(VK_NV_device_diagnostic_checkpoints)
-    lahar_load(lahar, vkCmdSetCheckpointNV);
-    lahar_load(lahar, vkGetQueueCheckpointDataNV);
+    lahar_load(vkCmdSetCheckpointNV);
+    lahar_load(vkGetQueueCheckpointDataNV);
 #endif /* defined(VK_NV_device_diagnostic_checkpoints) */
 #if defined(VK_NV_device_diagnostic_checkpoints) && (defined(VK_VERSION_1_3) || defined(VK_KHR_synchronization2))
-    lahar_load(lahar, vkGetQueueCheckpointData2NV);
+    lahar_load(vkGetQueueCheckpointData2NV);
 #endif /* defined(VK_NV_device_diagnostic_checkpoints) && (defined(VK_VERSION_1_3) || defined(VK_KHR_synchronization2)) */
 #if defined(VK_NV_device_generated_commands)
-    lahar_load(lahar, vkCmdBindPipelineShaderGroupNV);
-    lahar_load(lahar, vkCmdExecuteGeneratedCommandsNV);
-    lahar_load(lahar, vkCmdPreprocessGeneratedCommandsNV);
-    lahar_load(lahar, vkCreateIndirectCommandsLayoutNV);
-    lahar_load(lahar, vkDestroyIndirectCommandsLayoutNV);
-    lahar_load(lahar, vkGetGeneratedCommandsMemoryRequirementsNV);
+    lahar_load(vkCmdBindPipelineShaderGroupNV);
+    lahar_load(vkCmdExecuteGeneratedCommandsNV);
+    lahar_load(vkCmdPreprocessGeneratedCommandsNV);
+    lahar_load(vkCreateIndirectCommandsLayoutNV);
+    lahar_load(vkDestroyIndirectCommandsLayoutNV);
+    lahar_load(vkGetGeneratedCommandsMemoryRequirementsNV);
 #endif /* defined(VK_NV_device_generated_commands) */
 #if defined(VK_NV_device_generated_commands_compute)
-    lahar_load(lahar, vkCmdUpdatePipelineIndirectBufferNV);
-    lahar_load(lahar, vkGetPipelineIndirectDeviceAddressNV);
-    lahar_load(lahar, vkGetPipelineIndirectMemoryRequirementsNV);
+    lahar_load(vkCmdUpdatePipelineIndirectBufferNV);
+    lahar_load(vkGetPipelineIndirectDeviceAddressNV);
+    lahar_load(vkGetPipelineIndirectMemoryRequirementsNV);
 #endif /* defined(VK_NV_device_generated_commands_compute) */
 #if defined(VK_NV_external_compute_queue)
-    lahar_load(lahar, vkCreateExternalComputeQueueNV);
-    lahar_load(lahar, vkDestroyExternalComputeQueueNV);
-    lahar_load(lahar, vkGetExternalComputeQueueDataNV);
+    lahar_load(vkCreateExternalComputeQueueNV);
+    lahar_load(vkDestroyExternalComputeQueueNV);
+    lahar_load(vkGetExternalComputeQueueDataNV);
 #endif /* defined(VK_NV_external_compute_queue) */
 #if defined(VK_NV_external_memory_rdma)
-    lahar_load(lahar, vkGetMemoryRemoteAddressNV);
+    lahar_load(vkGetMemoryRemoteAddressNV);
 #endif /* defined(VK_NV_external_memory_rdma) */
 #if defined(VK_NV_external_memory_win32)
-    lahar_load(lahar, vkGetMemoryWin32HandleNV);
+    lahar_load(vkGetMemoryWin32HandleNV);
 #endif /* defined(VK_NV_external_memory_win32) */
 #if defined(VK_NV_fragment_shading_rate_enums)
-    lahar_load(lahar, vkCmdSetFragmentShadingRateEnumNV);
+    lahar_load(vkCmdSetFragmentShadingRateEnumNV);
 #endif /* defined(VK_NV_fragment_shading_rate_enums) */
 #if defined(VK_NV_low_latency2)
-    lahar_load(lahar, vkGetLatencyTimingsNV);
-    lahar_load(lahar, vkLatencySleepNV);
-    lahar_load(lahar, vkQueueNotifyOutOfBandNV);
-    lahar_load(lahar, vkSetLatencyMarkerNV);
-    lahar_load(lahar, vkSetLatencySleepModeNV);
+    lahar_load(vkGetLatencyTimingsNV);
+    lahar_load(vkLatencySleepNV);
+    lahar_load(vkQueueNotifyOutOfBandNV);
+    lahar_load(vkSetLatencyMarkerNV);
+    lahar_load(vkSetLatencySleepModeNV);
 #endif /* defined(VK_NV_low_latency2) */
 #if defined(VK_NV_memory_decompression)
-    lahar_load(lahar, vkCmdDecompressMemoryIndirectCountNV);
-    lahar_load(lahar, vkCmdDecompressMemoryNV);
+    lahar_load(vkCmdDecompressMemoryIndirectCountNV);
+    lahar_load(vkCmdDecompressMemoryNV);
 #endif /* defined(VK_NV_memory_decompression) */
 #if defined(VK_NV_mesh_shader)
-    lahar_load(lahar, vkCmdDrawMeshTasksIndirectNV);
-    lahar_load(lahar, vkCmdDrawMeshTasksNV);
+    lahar_load(vkCmdDrawMeshTasksIndirectNV);
+    lahar_load(vkCmdDrawMeshTasksNV);
 #endif /* defined(VK_NV_mesh_shader) */
 #if defined(VK_NV_mesh_shader) && (defined(VK_KHR_draw_indirect_count) || defined(VK_VERSION_1_2))
-    lahar_load(lahar, vkCmdDrawMeshTasksIndirectCountNV);
+    lahar_load(vkCmdDrawMeshTasksIndirectCountNV);
 #endif /* defined(VK_NV_mesh_shader) && (defined(VK_KHR_draw_indirect_count) || defined(VK_VERSION_1_2)) */
 #if defined(VK_NV_optical_flow)
-    lahar_load(lahar, vkBindOpticalFlowSessionImageNV);
-    lahar_load(lahar, vkCmdOpticalFlowExecuteNV);
-    lahar_load(lahar, vkCreateOpticalFlowSessionNV);
-    lahar_load(lahar, vkDestroyOpticalFlowSessionNV);
+    lahar_load(vkBindOpticalFlowSessionImageNV);
+    lahar_load(vkCmdOpticalFlowExecuteNV);
+    lahar_load(vkCreateOpticalFlowSessionNV);
+    lahar_load(vkDestroyOpticalFlowSessionNV);
 #endif /* defined(VK_NV_optical_flow) */
 #if defined(VK_NV_partitioned_acceleration_structure)
-    lahar_load(lahar, vkCmdBuildPartitionedAccelerationStructuresNV);
-    lahar_load(lahar, vkGetPartitionedAccelerationStructuresBuildSizesNV);
+    lahar_load(vkCmdBuildPartitionedAccelerationStructuresNV);
+    lahar_load(vkGetPartitionedAccelerationStructuresBuildSizesNV);
 #endif /* defined(VK_NV_partitioned_acceleration_structure) */
 #if defined(VK_NV_ray_tracing)
-    lahar_load(lahar, vkBindAccelerationStructureMemoryNV);
-    lahar_load(lahar, vkCmdBuildAccelerationStructureNV);
-    lahar_load(lahar, vkCmdCopyAccelerationStructureNV);
-    lahar_load(lahar, vkCmdTraceRaysNV);
-    lahar_load(lahar, vkCmdWriteAccelerationStructuresPropertiesNV);
-    lahar_load(lahar, vkCompileDeferredNV);
-    lahar_load(lahar, vkCreateAccelerationStructureNV);
-    lahar_load(lahar, vkCreateRayTracingPipelinesNV);
-    lahar_load(lahar, vkDestroyAccelerationStructureNV);
-    lahar_load(lahar, vkGetAccelerationStructureHandleNV);
-    lahar_load(lahar, vkGetAccelerationStructureMemoryRequirementsNV);
-    lahar_load(lahar, vkGetRayTracingShaderGroupHandlesNV);
+    lahar_load(vkBindAccelerationStructureMemoryNV);
+    lahar_load(vkCmdBuildAccelerationStructureNV);
+    lahar_load(vkCmdCopyAccelerationStructureNV);
+    lahar_load(vkCmdTraceRaysNV);
+    lahar_load(vkCmdWriteAccelerationStructuresPropertiesNV);
+    lahar_load(vkCompileDeferredNV);
+    lahar_load(vkCreateAccelerationStructureNV);
+    lahar_load(vkCreateRayTracingPipelinesNV);
+    lahar_load(vkDestroyAccelerationStructureNV);
+    lahar_load(vkGetAccelerationStructureHandleNV);
+    lahar_load(vkGetAccelerationStructureMemoryRequirementsNV);
+    lahar_load(vkGetRayTracingShaderGroupHandlesNV);
 #endif /* defined(VK_NV_ray_tracing) */
 #if defined(VK_NV_scissor_exclusive) && VK_NV_SCISSOR_EXCLUSIVE_SPEC_VERSION >= 2
-    lahar_load(lahar, vkCmdSetExclusiveScissorEnableNV);
+    lahar_load(vkCmdSetExclusiveScissorEnableNV);
 #endif /* defined(VK_NV_scissor_exclusive) && VK_NV_SCISSOR_EXCLUSIVE_SPEC_VERSION >= 2 */
 #if defined(VK_NV_scissor_exclusive)
-    lahar_load(lahar, vkCmdSetExclusiveScissorNV);
+    lahar_load(vkCmdSetExclusiveScissorNV);
 #endif /* defined(VK_NV_scissor_exclusive) */
 #if defined(VK_NV_shading_rate_image)
-    lahar_load(lahar, vkCmdBindShadingRateImageNV);
-    lahar_load(lahar, vkCmdSetCoarseSampleOrderNV);
-    lahar_load(lahar, vkCmdSetViewportShadingRatePaletteNV);
+    lahar_load(vkCmdBindShadingRateImageNV);
+    lahar_load(vkCmdSetCoarseSampleOrderNV);
+    lahar_load(vkCmdSetViewportShadingRatePaletteNV);
 #endif /* defined(VK_NV_shading_rate_image) */
 #if defined(VK_QCOM_tile_memory_heap)
-    lahar_load(lahar, vkCmdBindTileMemoryQCOM);
+    lahar_load(vkCmdBindTileMemoryQCOM);
 #endif /* defined(VK_QCOM_tile_memory_heap) */
 #if defined(VK_QCOM_tile_properties)
-    lahar_load(lahar, vkGetDynamicRenderingTilePropertiesQCOM);
-    lahar_load(lahar, vkGetFramebufferTilePropertiesQCOM);
+    lahar_load(vkGetDynamicRenderingTilePropertiesQCOM);
+    lahar_load(vkGetFramebufferTilePropertiesQCOM);
 #endif /* defined(VK_QCOM_tile_properties) */
 #if defined(VK_QCOM_tile_shading)
-    lahar_load(lahar, vkCmdBeginPerTileExecutionQCOM);
-    lahar_load(lahar, vkCmdDispatchTileQCOM);
-    lahar_load(lahar, vkCmdEndPerTileExecutionQCOM);
+    lahar_load(vkCmdBeginPerTileExecutionQCOM);
+    lahar_load(vkCmdDispatchTileQCOM);
+    lahar_load(vkCmdEndPerTileExecutionQCOM);
 #endif /* defined(VK_QCOM_tile_shading) */
 #if defined(VK_QNX_external_memory_screen_buffer)
-    lahar_load(lahar, vkGetScreenBufferPropertiesQNX);
+    lahar_load(vkGetScreenBufferPropertiesQNX);
 #endif /* defined(VK_QNX_external_memory_screen_buffer) */
 #if defined(VK_VALVE_descriptor_set_host_mapping)
-    lahar_load(lahar, vkGetDescriptorSetHostMappingVALVE);
-    lahar_load(lahar, vkGetDescriptorSetLayoutHostMappingInfoVALVE);
+    lahar_load(vkGetDescriptorSetHostMappingVALVE);
+    lahar_load(vkGetDescriptorSetLayoutHostMappingInfoVALVE);
 #endif /* defined(VK_VALVE_descriptor_set_host_mapping) */
 #if (defined(VK_EXT_depth_clamp_control)) || (defined(VK_EXT_shader_object) && defined(VK_EXT_depth_clamp_control))
-    lahar_load(lahar, vkCmdSetDepthClampRangeEXT);
+    lahar_load(vkCmdSetDepthClampRangeEXT);
 #endif /* (defined(VK_EXT_depth_clamp_control)) || (defined(VK_EXT_shader_object) && defined(VK_EXT_depth_clamp_control)) */
 #if (defined(VK_EXT_extended_dynamic_state)) || (defined(VK_EXT_shader_object))
-    lahar_load(lahar, vkCmdBindVertexBuffers2EXT);
-    lahar_load(lahar, vkCmdSetCullModeEXT);
-    lahar_load(lahar, vkCmdSetDepthBoundsTestEnableEXT);
-    lahar_load(lahar, vkCmdSetDepthCompareOpEXT);
-    lahar_load(lahar, vkCmdSetDepthTestEnableEXT);
-    lahar_load(lahar, vkCmdSetDepthWriteEnableEXT);
-    lahar_load(lahar, vkCmdSetFrontFaceEXT);
-    lahar_load(lahar, vkCmdSetPrimitiveTopologyEXT);
-    lahar_load(lahar, vkCmdSetScissorWithCountEXT);
-    lahar_load(lahar, vkCmdSetStencilOpEXT);
-    lahar_load(lahar, vkCmdSetStencilTestEnableEXT);
-    lahar_load(lahar, vkCmdSetViewportWithCountEXT);
+    lahar_load(vkCmdBindVertexBuffers2EXT);
+    lahar_load(vkCmdSetCullModeEXT);
+    lahar_load(vkCmdSetDepthBoundsTestEnableEXT);
+    lahar_load(vkCmdSetDepthCompareOpEXT);
+    lahar_load(vkCmdSetDepthTestEnableEXT);
+    lahar_load(vkCmdSetDepthWriteEnableEXT);
+    lahar_load(vkCmdSetFrontFaceEXT);
+    lahar_load(vkCmdSetPrimitiveTopologyEXT);
+    lahar_load(vkCmdSetScissorWithCountEXT);
+    lahar_load(vkCmdSetStencilOpEXT);
+    lahar_load(vkCmdSetStencilTestEnableEXT);
+    lahar_load(vkCmdSetViewportWithCountEXT);
 #endif /* (defined(VK_EXT_extended_dynamic_state)) || (defined(VK_EXT_shader_object)) */
 #if (defined(VK_EXT_extended_dynamic_state2)) || (defined(VK_EXT_shader_object))
-    lahar_load(lahar, vkCmdSetDepthBiasEnableEXT);
-    lahar_load(lahar, vkCmdSetLogicOpEXT);
-    lahar_load(lahar, vkCmdSetPatchControlPointsEXT);
-    lahar_load(lahar, vkCmdSetPrimitiveRestartEnableEXT);
-    lahar_load(lahar, vkCmdSetRasterizerDiscardEnableEXT);
+    lahar_load(vkCmdSetDepthBiasEnableEXT);
+    lahar_load(vkCmdSetLogicOpEXT);
+    lahar_load(vkCmdSetPatchControlPointsEXT);
+    lahar_load(vkCmdSetPrimitiveRestartEnableEXT);
+    lahar_load(vkCmdSetRasterizerDiscardEnableEXT);
 #endif /* (defined(VK_EXT_extended_dynamic_state2)) || (defined(VK_EXT_shader_object)) */
 #if (defined(VK_EXT_extended_dynamic_state3)) || (defined(VK_EXT_shader_object))
-    lahar_load(lahar, vkCmdSetAlphaToCoverageEnableEXT);
-    lahar_load(lahar, vkCmdSetAlphaToOneEnableEXT);
-    lahar_load(lahar, vkCmdSetColorBlendEnableEXT);
-    lahar_load(lahar, vkCmdSetColorBlendEquationEXT);
-    lahar_load(lahar, vkCmdSetColorWriteMaskEXT);
-    lahar_load(lahar, vkCmdSetDepthClampEnableEXT);
-    lahar_load(lahar, vkCmdSetLogicOpEnableEXT);
-    lahar_load(lahar, vkCmdSetPolygonModeEXT);
-    lahar_load(lahar, vkCmdSetRasterizationSamplesEXT);
-    lahar_load(lahar, vkCmdSetSampleMaskEXT);
+    lahar_load(vkCmdSetAlphaToCoverageEnableEXT);
+    lahar_load(vkCmdSetAlphaToOneEnableEXT);
+    lahar_load(vkCmdSetColorBlendEnableEXT);
+    lahar_load(vkCmdSetColorBlendEquationEXT);
+    lahar_load(vkCmdSetColorWriteMaskEXT);
+    lahar_load(vkCmdSetDepthClampEnableEXT);
+    lahar_load(vkCmdSetLogicOpEnableEXT);
+    lahar_load(vkCmdSetPolygonModeEXT);
+    lahar_load(vkCmdSetRasterizationSamplesEXT);
+    lahar_load(vkCmdSetSampleMaskEXT);
 #endif /* (defined(VK_EXT_extended_dynamic_state3)) || (defined(VK_EXT_shader_object)) */
 #if (defined(VK_EXT_extended_dynamic_state3) && (defined(VK_KHR_maintenance2) || defined(VK_VERSION_1_1))) || (defined(VK_EXT_shader_object))
-    lahar_load(lahar, vkCmdSetTessellationDomainOriginEXT);
+    lahar_load(vkCmdSetTessellationDomainOriginEXT);
 #endif /* (defined(VK_EXT_extended_dynamic_state3) && (defined(VK_KHR_maintenance2) || defined(VK_VERSION_1_1))) || (defined(VK_EXT_shader_object)) */
 #if (defined(VK_EXT_extended_dynamic_state3) && defined(VK_EXT_transform_feedback)) || (defined(VK_EXT_shader_object) && defined(VK_EXT_transform_feedback))
-    lahar_load(lahar, vkCmdSetRasterizationStreamEXT);
+    lahar_load(vkCmdSetRasterizationStreamEXT);
 #endif /* (defined(VK_EXT_extended_dynamic_state3) && defined(VK_EXT_transform_feedback)) || (defined(VK_EXT_shader_object) && defined(VK_EXT_transform_feedback)) */
 #if (defined(VK_EXT_extended_dynamic_state3) && defined(VK_EXT_conservative_rasterization)) || (defined(VK_EXT_shader_object) && defined(VK_EXT_conservative_rasterization))
-    lahar_load(lahar, vkCmdSetConservativeRasterizationModeEXT);
-    lahar_load(lahar, vkCmdSetExtraPrimitiveOverestimationSizeEXT);
+    lahar_load(vkCmdSetConservativeRasterizationModeEXT);
+    lahar_load(vkCmdSetExtraPrimitiveOverestimationSizeEXT);
 #endif /* (defined(VK_EXT_extended_dynamic_state3) && defined(VK_EXT_conservative_rasterization)) || (defined(VK_EXT_shader_object) && defined(VK_EXT_conservative_rasterization)) */
 #if (defined(VK_EXT_extended_dynamic_state3) && defined(VK_EXT_depth_clip_enable)) || (defined(VK_EXT_shader_object) && defined(VK_EXT_depth_clip_enable))
-    lahar_load(lahar, vkCmdSetDepthClipEnableEXT);
+    lahar_load(vkCmdSetDepthClipEnableEXT);
 #endif /* (defined(VK_EXT_extended_dynamic_state3) && defined(VK_EXT_depth_clip_enable)) || (defined(VK_EXT_shader_object) && defined(VK_EXT_depth_clip_enable)) */
 #if (defined(VK_EXT_extended_dynamic_state3) && defined(VK_EXT_sample_locations)) || (defined(VK_EXT_shader_object) && defined(VK_EXT_sample_locations))
-    lahar_load(lahar, vkCmdSetSampleLocationsEnableEXT);
+    lahar_load(vkCmdSetSampleLocationsEnableEXT);
 #endif /* (defined(VK_EXT_extended_dynamic_state3) && defined(VK_EXT_sample_locations)) || (defined(VK_EXT_shader_object) && defined(VK_EXT_sample_locations)) */
 #if (defined(VK_EXT_extended_dynamic_state3) && defined(VK_EXT_blend_operation_advanced)) || (defined(VK_EXT_shader_object) && defined(VK_EXT_blend_operation_advanced))
-    lahar_load(lahar, vkCmdSetColorBlendAdvancedEXT);
+    lahar_load(vkCmdSetColorBlendAdvancedEXT);
 #endif /* (defined(VK_EXT_extended_dynamic_state3) && defined(VK_EXT_blend_operation_advanced)) || (defined(VK_EXT_shader_object) && defined(VK_EXT_blend_operation_advanced)) */
 #if (defined(VK_EXT_extended_dynamic_state3) && defined(VK_EXT_provoking_vertex)) || (defined(VK_EXT_shader_object) && defined(VK_EXT_provoking_vertex))
-    lahar_load(lahar, vkCmdSetProvokingVertexModeEXT);
+    lahar_load(vkCmdSetProvokingVertexModeEXT);
 #endif /* (defined(VK_EXT_extended_dynamic_state3) && defined(VK_EXT_provoking_vertex)) || (defined(VK_EXT_shader_object) && defined(VK_EXT_provoking_vertex)) */
 #if (defined(VK_EXT_extended_dynamic_state3) && defined(VK_EXT_line_rasterization)) || (defined(VK_EXT_shader_object) && defined(VK_EXT_line_rasterization))
-    lahar_load(lahar, vkCmdSetLineRasterizationModeEXT);
-    lahar_load(lahar, vkCmdSetLineStippleEnableEXT);
+    lahar_load(vkCmdSetLineRasterizationModeEXT);
+    lahar_load(vkCmdSetLineStippleEnableEXT);
 #endif /* (defined(VK_EXT_extended_dynamic_state3) && defined(VK_EXT_line_rasterization)) || (defined(VK_EXT_shader_object) && defined(VK_EXT_line_rasterization)) */
 #if (defined(VK_EXT_extended_dynamic_state3) && defined(VK_EXT_depth_clip_control)) || (defined(VK_EXT_shader_object) && defined(VK_EXT_depth_clip_control))
-    lahar_load(lahar, vkCmdSetDepthClipNegativeOneToOneEXT);
+    lahar_load(vkCmdSetDepthClipNegativeOneToOneEXT);
 #endif /* (defined(VK_EXT_extended_dynamic_state3) && defined(VK_EXT_depth_clip_control)) || (defined(VK_EXT_shader_object) && defined(VK_EXT_depth_clip_control)) */
 #if (defined(VK_EXT_extended_dynamic_state3) && defined(VK_NV_clip_space_w_scaling)) || (defined(VK_EXT_shader_object) && defined(VK_NV_clip_space_w_scaling))
-    lahar_load(lahar, vkCmdSetViewportWScalingEnableNV);
+    lahar_load(vkCmdSetViewportWScalingEnableNV);
 #endif /* (defined(VK_EXT_extended_dynamic_state3) && defined(VK_NV_clip_space_w_scaling)) || (defined(VK_EXT_shader_object) && defined(VK_NV_clip_space_w_scaling)) */
 #if (defined(VK_EXT_extended_dynamic_state3) && defined(VK_NV_viewport_swizzle)) || (defined(VK_EXT_shader_object) && defined(VK_NV_viewport_swizzle))
-    lahar_load(lahar, vkCmdSetViewportSwizzleNV);
+    lahar_load(vkCmdSetViewportSwizzleNV);
 #endif /* (defined(VK_EXT_extended_dynamic_state3) && defined(VK_NV_viewport_swizzle)) || (defined(VK_EXT_shader_object) && defined(VK_NV_viewport_swizzle)) */
 #if (defined(VK_EXT_extended_dynamic_state3) && defined(VK_NV_fragment_coverage_to_color)) || (defined(VK_EXT_shader_object) && defined(VK_NV_fragment_coverage_to_color))
-    lahar_load(lahar, vkCmdSetCoverageToColorEnableNV);
-    lahar_load(lahar, vkCmdSetCoverageToColorLocationNV);
+    lahar_load(vkCmdSetCoverageToColorEnableNV);
+    lahar_load(vkCmdSetCoverageToColorLocationNV);
 #endif /* (defined(VK_EXT_extended_dynamic_state3) && defined(VK_NV_fragment_coverage_to_color)) || (defined(VK_EXT_shader_object) && defined(VK_NV_fragment_coverage_to_color)) */
 #if (defined(VK_EXT_extended_dynamic_state3) && defined(VK_NV_framebuffer_mixed_samples)) || (defined(VK_EXT_shader_object) && defined(VK_NV_framebuffer_mixed_samples))
-    lahar_load(lahar, vkCmdSetCoverageModulationModeNV);
-    lahar_load(lahar, vkCmdSetCoverageModulationTableEnableNV);
-    lahar_load(lahar, vkCmdSetCoverageModulationTableNV);
+    lahar_load(vkCmdSetCoverageModulationModeNV);
+    lahar_load(vkCmdSetCoverageModulationTableEnableNV);
+    lahar_load(vkCmdSetCoverageModulationTableNV);
 #endif /* (defined(VK_EXT_extended_dynamic_state3) && defined(VK_NV_framebuffer_mixed_samples)) || (defined(VK_EXT_shader_object) && defined(VK_NV_framebuffer_mixed_samples)) */
 #if (defined(VK_EXT_extended_dynamic_state3) && defined(VK_NV_shading_rate_image)) || (defined(VK_EXT_shader_object) && defined(VK_NV_shading_rate_image))
-    lahar_load(lahar, vkCmdSetShadingRateImageEnableNV);
+    lahar_load(vkCmdSetShadingRateImageEnableNV);
 #endif /* (defined(VK_EXT_extended_dynamic_state3) && defined(VK_NV_shading_rate_image)) || (defined(VK_EXT_shader_object) && defined(VK_NV_shading_rate_image)) */
 #if (defined(VK_EXT_extended_dynamic_state3) && defined(VK_NV_representative_fragment_test)) || (defined(VK_EXT_shader_object) && defined(VK_NV_representative_fragment_test))
-    lahar_load(lahar, vkCmdSetRepresentativeFragmentTestEnableNV);
+    lahar_load(vkCmdSetRepresentativeFragmentTestEnableNV);
 #endif /* (defined(VK_EXT_extended_dynamic_state3) && defined(VK_NV_representative_fragment_test)) || (defined(VK_EXT_shader_object) && defined(VK_NV_representative_fragment_test)) */
 #if (defined(VK_EXT_extended_dynamic_state3) && defined(VK_NV_coverage_reduction_mode)) || (defined(VK_EXT_shader_object) && defined(VK_NV_coverage_reduction_mode))
-    lahar_load(lahar, vkCmdSetCoverageReductionModeNV);
+    lahar_load(vkCmdSetCoverageReductionModeNV);
 #endif /* (defined(VK_EXT_extended_dynamic_state3) && defined(VK_NV_coverage_reduction_mode)) || (defined(VK_EXT_shader_object) && defined(VK_NV_coverage_reduction_mode)) */
 #if (defined(VK_EXT_host_image_copy)) || (defined(VK_EXT_image_compression_control))
-    lahar_load(lahar, vkGetImageSubresourceLayout2EXT);
+    lahar_load(vkGetImageSubresourceLayout2EXT);
 #endif /* (defined(VK_EXT_host_image_copy)) || (defined(VK_EXT_image_compression_control)) */
 #if (defined(VK_EXT_shader_object)) || (defined(VK_EXT_vertex_input_dynamic_state))
-    lahar_load(lahar, vkCmdSetVertexInputEXT);
+    lahar_load(vkCmdSetVertexInputEXT);
 #endif /* (defined(VK_EXT_shader_object)) || (defined(VK_EXT_vertex_input_dynamic_state)) */
 #if (defined(VK_KHR_descriptor_update_template) && defined(VK_KHR_push_descriptor)) || (defined(VK_KHR_push_descriptor) && (defined(VK_VERSION_1_1) || defined(VK_KHR_descriptor_update_template)))
-    lahar_load(lahar, vkCmdPushDescriptorSetWithTemplateKHR);
+    lahar_load(vkCmdPushDescriptorSetWithTemplateKHR);
 #endif /* (defined(VK_KHR_descriptor_update_template) && defined(VK_KHR_push_descriptor)) || (defined(VK_KHR_push_descriptor) && (defined(VK_VERSION_1_1) || defined(VK_KHR_descriptor_update_template))) */
 #if (defined(VK_KHR_device_group) && defined(VK_KHR_surface)) || (defined(VK_KHR_swapchain) && defined(VK_VERSION_1_1))
-    lahar_load(lahar, vkGetDeviceGroupPresentCapabilitiesKHR);
-    lahar_load(lahar, vkGetDeviceGroupSurfacePresentModesKHR);
+    lahar_load(vkGetDeviceGroupPresentCapabilitiesKHR);
+    lahar_load(vkGetDeviceGroupSurfacePresentModesKHR);
 #endif /* (defined(VK_KHR_device_group) && defined(VK_KHR_surface)) || (defined(VK_KHR_swapchain) && defined(VK_VERSION_1_1)) */
 #if (defined(VK_KHR_device_group) && defined(VK_KHR_swapchain)) || (defined(VK_KHR_swapchain) && defined(VK_VERSION_1_1))
-    lahar_load(lahar, vkAcquireNextImage2KHR);
+    lahar_load(vkAcquireNextImage2KHR);
 #endif /* (defined(VK_KHR_device_group) && defined(VK_KHR_swapchain)) || (defined(VK_KHR_swapchain) && defined(VK_VERSION_1_1)) */
 /* LAHAR_VK_LOAD_DEVICE */
 
