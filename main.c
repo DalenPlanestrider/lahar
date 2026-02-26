@@ -44,7 +44,7 @@ int main() {
         return 1;
     }
 
-    //glfwSetWindowSizeCallback(window, window_resize);
+    glfwSetWindowSizeCallback(window, window_resize);
 
     // Window management is optional, you can use lahar like a vk-bootstrap/volk replacement alone, if desired 
     // Also, the window you use is up to you. Native support for glfw and sdl3. Plus an api for defining custom
