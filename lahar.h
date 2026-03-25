@@ -18,18 +18,16 @@ The general flow is:
 
 2. #include <lahar.h>
 
-3. Create a Lahar instance. stack, heap, static, doesn't matter as long as it doesn't move
+3. Call lahar_init()
 
-4. Call lahar_init() on the instance
-
-5. Use the suite of lahar_builder_* configuration functions to configure what you want (or poke
+4. Use the suite of lahar_builder_* configuration functions to configure what you want (or poke
    the struct internals, they're fairly well commented)
 
-6. Use lahar_build()
+5. Use lahar_build()
 
-7. Your normal vulkan flow. Set up pipelines, enter render loop, etc
+6. Your normal vulkan flow. Set up pipelines, enter render loop, etc
 
-8. (optional) lahar has some utilities to simplify command submission, window presentation,
+7. (optional) lahar has some utilities to simplify command submission, window presentation,
    and layout transitions, if you want.    
 
 
@@ -46,11 +44,20 @@ Compile-Time Configuration options:
     LAHAR_M_ARENA_SIZE [positive integer]
         For some operations, lahar uses a fixed size arena. If for some reason your
         environment is exhausting that arena, it will trip an assertion. You can
-        fix this by enlarging the arena.
+        fix this by enlarging the arena. Default: 65kb
 
     LAHAR_MAX_DEVICE_ENTRIES [positive integer]
         This determines how many surface formats/present modes a device can
-        have associated with it.
+        have associated with it. Default: 16
+
+    LAHAR_MAX_SHADER_STAGES [positive integer]
+        This controls how many stages a shader can include. Default: 8
+
+    LAHAR_MAX_ATTACHMENTS [positive integer]
+        This controls how attachments a window can have. Default: 8
+
+    LAHAR_MAX_SHADER_COMPILERS [positive integer]
+        The maximum number of shader compilers you can register. Default: 4
 
     LAHAR_CUSTOM_WINDOW [type without pointer]
         If you need to support a custom window interface. You must _also_ implement
@@ -84,6 +91,10 @@ Compile-Time Configuration options:
     lahar_free
         A set of macros with the stdlib-like apis, for if you'd like to
         redirect lahar's memory usage
+
+    LAHAR_DEFAULT_ALIGNMENT [positive integer expression] - default alignof(max_align_t)
+
+    LAHAR_DEBUG_BREAK [expression] - default raise(SIGTRAP)
 */
 
 
@@ -182,7 +193,7 @@ Compile-Time Configuration options:
 #endif
 
 #if defined(_WIN32)
-    #define LaharLibray HMODULE
+    #define LaharLibrary HMODULE
 #else
     #define LaharLibrary void*
 #endif
@@ -191,6 +202,17 @@ Compile-Time Configuration options:
     #define LAHAR_MAX_DEVICE_ENTRIES 16
 #endif
 
+#ifndef LAHAR_MAX_SHADER_STAGES
+    #define LAHAR_MAX_SHADER_STAGES 8
+#endif
+
+#ifndef LAHAR_MAX_ATTACHMENTS
+    #define LAHAR_MAX_ATTACHMENTS 8
+#endif
+
+#ifndef LAHAR_MAX_SHADER_COMPILERS
+    #define LAHAR_MAX_SHADER_COMPILERS 4
+#endif
 
 #define LAHAR_ERR_SUCCESS 0                             // All good in the neighborhood
 #define LAHAR_ERR_ILLEGAL_PARAMS 0x00020001             // Wrong stuff for this function
@@ -208,6 +230,10 @@ Compile-Time Configuration options:
 #define LAHAR_ERR_SWAPCHAIN_OUT_OF_DATE 0x0002000D      // The swapchain needs updated
 #define LAHAR_ERR_INVALID_FRAME_STATE 0x0002000E        // You did things out of order (must always be frame_start -> submit -> present)
 #define LAHAR_ERR_ATTACHMENT_WO_ALLOCATOR 0x0002000F    // You requested non-color attachments for a window, but provided no allocator  
+#define LAHAR_ERR_UNKNOWN_LANGUAGE 0x00020010           // Don't know this shader language
+#define LAHAR_ERR_MALFORMED_CODE 0x00020011             // This shader code is invalid
+#define LAHAR_ERR_ID_NOT_FOUND 0x00020012               // Couldn't find data on this ID
+#define LAHAR_ERR_INVALID_TYPE 0x00020013               // This type can't be used this way
 
 struct Lahar;
 typedef struct Lahar Lahar;
@@ -230,6 +256,18 @@ typedef struct LaharAttachmentConfig LaharAttachmentConfig;
 struct LaharAllocator;
 typedef struct LaharAllocator LaharAllocator;
 
+struct LaharShaderVarInfo;
+typedef struct LaharShaderVarInfo LaharShaderVarInfo;
+
+struct LaharShaderStage;
+typedef struct LaharShaderStage LaharShaderStage;
+
+struct LaharShaderBuilder;
+typedef struct LaharShaderBuilder LaharShaderBuilder;
+
+struct LaharShaderCompiler;
+typedef struct LaharShaderCompiler LaharShaderCompiler;
+
 #if !defined(__cplusplus)
 enum LaharWindowProfile;
 typedef enum LaharWindowProfile LaharWindowProfile;
@@ -239,6 +277,39 @@ typedef enum LaharFramePhase LaharFramePhase;
 
 enum LaharDebugLevel;
 typedef enum LaharDebugLevel LaharDebugLevel;
+
+enum LaharShaderVarType;
+typedef enum LaharShaderVarType LaharShaderVarType;
+
+enum LaharShaderVarStorageClass;
+typedef enum LaharShaderVarStorageClass LaharShaderVarStorageClass;
+
+enum LaharShaderBlendMode;
+typedef enum LaharShaderBlendMode LaharShaderBlendMode;
+
+enum LaharShaderTopology;
+typedef enum LaharShaderTopology LaharShaderTopology;
+
+enum LaharShaderDepthTestMode;
+typedef enum LaharShaderDepthTestMode LaharShaderDepthTestMode;
+
+enum LaharShaderDepthWriteMode;
+typedef enum LaharShaderDepthWriteMode LaharShaderDepthWriteMode;
+
+enum LaharShaderDepthCompareOp;
+typedef enum LaharShaderDepthCompareOp LaharShaderDepthCompareOp;
+
+enum LaharShaderCullMode;
+typedef enum LaharShaderCullMode LaharShaderCullMode;
+
+enum LaharShaderDynamicFlags;
+typedef enum LaharShaderDynamicFlags LaharShaderDynamicFlags;
+
+enum LaharShaderFaceMode;
+typedef enum LaharShaderFaceMode LaharShaderFaceMode;
+
+enum LaharAttachmentRole;
+typedef enum LaharAttachmentRole LaharAttachmentRole;
 #endif
 
 typedef PFN_vkVoidFunction (*LaharLoaderFunc)(const char*);
@@ -246,6 +317,8 @@ typedef int64_t (*LaharDeviceScoreFunc)(const LaharDeviceInfo*);
 typedef uint32_t (*LaharSurfaceFormatChooseFunc)(LaharWindowState*, LaharDeviceInfo*, VkSurfaceFormatKHR* surface_fmt_out);
 typedef uint32_t (*LaharSurfacePresentModeChooseFunc)(LaharWindowState*, LaharDeviceInfo*, VkPresentModeKHR* present_mode_out);
 typedef uint32_t (*LaharSurfaceResizeFunc)(LaharWindow* window);
+typedef uint32_t (*LaharShaderCompileFunc)(void* data, const LaharShaderStage* stage, uint32_t** spv_out, uint64_t* len_out);
+typedef uint32_t (*LaharShaderCompileReleaseFunc)(void* data, uint32_t* spv, uint64_t len);
 
 typedef uint32_t (*LaharAllocImageFunc)(void* self, Lahar* lahar, const VkImageCreateInfo* info, VkImage* img_out, LaharAllocation* alloc_out);
 typedef uint32_t (*LaharFreeImageFunc)(void* self, Lahar* lahar, VkImage* img, LaharAllocation* alloc);
@@ -281,17 +354,27 @@ enum LaharFramePhase {
 enum LaharDebugLevel {
     LAHAR_DEBUG_UNSET = 0,
     LAHAR_DEBUG_TRACE = 1,
-    LAHAR_DEBUG_INFO = 3,
-    LAHAR_DEBUG_WARNING = 4,
-    LAHAR_DEBUG_ERROR = 5,
-    LAHAR_DEBUG_DISABLED = 6
+    LAHAR_DEBUG_INFO = 2,
+    LAHAR_DEBUG_WARNING = 3,
+    LAHAR_DEBUG_ERROR = 4,
+    LAHAR_DEBUG_DISABLED = 5
+};
+
+enum LaharAttachmentRole {
+    LAHAR_ATTROLE_COLOR,        // The primary color attachment
+    LAHAR_ATTROLE_USER,         // A user-specific attachment. Functions as a color attachment
+    LAHAR_ATTROLE_DEPTH,        // A depth attachment
+    LAHAR_ATTROLE_STENCIL,      // A stencil attachment
+    LAHAR_ATTROLE_DEPTH_STENCIL // A combined depth + stencil attachment
 };
 
 struct LaharAttachmentConfig {
+    LaharAttachmentRole role;               // The role this attachment plays, color, user, depth, stencil
     VkImageUsageFlags usage;                // The image's usage. This affects 1. The color attachment's usage in the swapchain, and 2. the subresourcerange while transitioning via a lookup table
     VkAttachmentDescription description;    // The attachment description.
     VkImageCreateInfo img_info;             // The image info. This is passed verbatim to create image (except the extent width/height is set automatically)
     VkImageViewCreateInfo view_info;        // The image view info. This is passed verbatim to create image view (except the image is set automatically)
+    VkClearValue clear_value;               // The value this attachment will be cleared to
 };
 
 struct LaharWindowConfig {
@@ -304,12 +387,9 @@ struct LaharWindowConfig {
 };
 
 enum LaharWindowProfile {
-    LAHAR_WINPROF_COLOR,            // Create the window with only a color attachment
-    LAHAR_WINPROF_COLOR_DEPTH,      // Create the window with a color, and a stencil+depth attachment
+    LAHAR_WINPROF_COLOR,                // Create the window with only a color attachment
+    LAHAR_WINPROF_COLOR_DEPTH_STENCIL,  // Create the window with a color, and a depth+stencil attachment
 };
-
-#define LAHAR_ATT_COLOR_INDEX 0             // The index of the color attachment ALWAYS
-#define LAHAR_ATT_STENCIL_DEPTH_INDEX 1     // The index of the stencil/depth attachment if created with a window profile
 
 struct LaharAttachment {
     LaharAllocation img_allocation;         // The allocation for the image
@@ -343,11 +423,18 @@ struct LaharWindowState {
     uint32_t flight_index;                  // The logical index of the frame in flight. Use this to index sync primitives, or anything "per frame in flight"
     uint32_t frame_index;                   // The index of the current swapchain image, set by window_frame_begin
 
-    size_t attachment_count;                // The number of attachment types this window has
+    uint32_t attachment_count;                  // The number of attachment types this window has
     LaharAttachmentConfig* attachment_configs;  // The configurations for the attachments, in order of [ATTACHMENT_TYPE]
-    LaharAttachment** attachments;          // Attachments are in a 2D array, of [ATTACHMENT_TYPE][FRAME_INDEX]
+    LaharAttachment** attachments;              // Attachments are in a 2D array, of [ATTACHMENT_TYPE][FRAME_INDEX]
 
     VkCommandBuffer* commands;              // Will be null unless specifically requested
+};
+
+struct LaharShaderCompiler {
+    const char* language;
+    void* user_data;
+    LaharShaderCompileFunc compile;
+    LaharShaderCompileReleaseFunc release;
 };
 
 struct Lahar {
@@ -370,6 +457,7 @@ struct Lahar {
     LaharDeviceScoreFunc score_func;                        // An optional custom scoring function to invoke on physical devices
     LaharSurfaceFormatChooseFunc format_chooser;            // An optional custom callback to choose the surface format
     LaharSurfacePresentModeChooseFunc present_chooser;      // An optional custom callback to choose the surface present mode
+    LaharShaderCompiler shader_compilers[LAHAR_MAX_SHADER_COMPILERS];
 
     /* Useful Vulkan variables */
 
@@ -430,6 +518,15 @@ void* lahar_get_user_data(void);
 
 /** Cleanup the entirety of lahar */
 void lahar_deinit(void);
+
+
+
+
+
+
+
+
+
 
 /** Configuration is done, setup and prepare for rendering */
 uint32_t lahar_build(void);
@@ -502,21 +599,13 @@ uint32_t lahar_builder_device_use(const char* name);
  */
 uint32_t lahar_builder_device_set_scoring(LaharDeviceScoreFunc scorefunc);
 
-
 /** Tell lahar to create the utility command buffers in the windows.
  * Not needed if you plan to create your own */
 void lahar_builder_request_command_buffers(void);
 
-
 /** Set the pNext value that will be passed to VkDeviceCreateInfo.
  * This is useful for enabling device features, such as dynamic rendering */
 void lahar_builder_set_device_create_pnext(void* pnext);
-
-
-
-
-
-
 
 /** Register a window with lahar. When finalized, this window will have its surface/swapchain/attachments created. 
  * 
@@ -551,6 +640,12 @@ uint32_t lahar_builder_window_register_ex(LaharWindow* window, const LaharWindow
 
 
 
+
+
+
+
+
+
 /** Check if an optional instance extension was loaded
  * @param lahar The lahar instance
  * @param extension The extension to check for
@@ -563,9 +658,17 @@ bool lahar_extension_has_instance(const char* extension);
  */
 bool lahar_extension_has_device(const char* extension);
 
+
+
+
+
+
+
+
+
+
 /** Begin a frame, preparing for rendering. You only need to use this
  * if you plan on using lahar_window_submit, or lahar_window_present
- * 
  */
 uint32_t lahar_window_frame_begin(LaharWindow* window);
 
@@ -637,30 +740,479 @@ uint32_t lahar_window_get_size(LaharWindow* window, uint32_t* width, uint32_t* h
 
 uint32_t lahar_window_get_extensions(LaharWindow* window, uint32_t* ext_count, const char** extensions);
 
-
-/** A utility to record the command to transition a the layout of a window's
- * attachment. Useful if you're doing dynamic rendering.
- * 
- * @param lahar The lahar instance
- * @param window The window
- * @param attachment_index The index of the attachment to transition, as specified in your original attachment array (or see defaults)
- * @param layout The layout to transition to
- * @param cmd The command buffer to record to
- * 
- */
-uint32_t lahar_window_attachment_transition(LaharWindow* window, uint32_t attachment_index, VkImageLayout layout, VkCommandBuffer cmd);
-
 /** Get the lahar window state struct for this window. NULL if not found. */
 LaharWindowState* lahar_window_state(LaharWindow* window);
 
 /** Wait until a particular window is inactive */
 uint32_t lahar_window_wait_inactive(LaharWindow* window);
 
+/** Get the configurations used during attachment creations for by index.
+ *
+ * @param window The window
+ * @param index The attachment index
+ * @return The config pointer, or NULL if not found
+*/
+LaharAttachmentConfig* lahar_window_attachment_config_index(LaharWindow* window, uint32_t index);
 
+/** Get the first configuration used during attachment creation that has the color role
+ *
+ * @param window The window
+ * @return The config pointer, or NULL if not found
+*/
+LaharAttachmentConfig* lahar_window_attachment_config_color(LaharWindow* window);
+
+/** Get the first configuration used during attachment creation that has the depth or depth+stencil roles
+ *
+ * @param window The window
+ * @return The config pointer, or NULL if not found
+*/
+LaharAttachmentConfig* lahar_window_attachment_config_depth(LaharWindow* window);
+
+/** Get the first configuration used during attachment creation that has the stencil or depth+stencil roles
+ *
+ * @param window The window
+ * @return The config pointer, or NULL if not found
+*/
+LaharAttachmentConfig* lahar_window_attachment_config_stencil(LaharWindow* window);
+
+
+/** Get the actual attachment data for a window for an attachment at a specifc index,
+ * and at a specific frame
+ *
+ * @param window The window
+ * @param index The attachment index
+ * @return The config pointer, or NULL if not found
+*/
+LaharAttachment* lahar_window_attachment_index(LaharWindow* window, uint32_t index, uint32_t frameno);
+
+/** Get the actual attachment data for a window for the first attachment with the color role
+ * and at a specific frame
+ *
+ * @param window The window
+ * @param index The attachment index
+ * @return The config pointer, or NULL if not found
+*/
+LaharAttachment* lahar_window_attachment_color(LaharWindow* window, uint32_t frameno);
+
+/** Get the actual attachment data for a window for the first attachment with the depth or depth+stencil
+ * and at a specific frame
+ *
+ * @param window The window
+ * @param index The attachment index
+ * @return The config pointer, or NULL if not found
+*/
+LaharAttachment* lahar_window_attachment_depth(LaharWindow* window, uint32_t frameno);
+
+/** Get the actual attachment data for a window for the first attachment with the stencil or depth+stencil
+ * and at a specific frame
+ *
+ * @param window The window
+ * @param index The attachment index
+ * @return The config pointer, or NULL if not found
+*/
+LaharAttachment* lahar_window_attachment_stencil(LaharWindow* window, uint32_t frameno);
+
+/** Get the command buffer for this frame. Only works after calling window_frame_begin
+ *
+ * @return The command buffer for the current frame, or VK_NULL_HANDLE if no command buffers were created
+ */
+VkCommandBuffer lahar_window_command_buffer(LaharWindow* window);
+
+
+
+
+
+
+
+
+/** A utility to record the command to transition a the layout of a window's
+ * attachment. Useful if you're doing dynamic rendering.
+ * 
+ * @param cmd The command buffer to record to
+ * @param lahar The lahar instance
+ * @param window The window
+ * @param attachment_index The index of the attachment to transition, as specified in your original attachment array (or see defaults)
+ * @param layout The layout to transition to
+ * 
+ */
+uint32_t lahar_cmd_attachment_transition(VkCommandBuffer cmd, LaharWindow* window, uint32_t attachment_index, VkImageLayout layout);
+
+/** A utility to make calling vkCmdBeginRendering easier. Handles
+ * marshalling all the attachment info from your window.
+ *
+ * @param cmd The command buffer to record to
+ * @param window The window to begin rendering with
+ */
+uint32_t lahar_cmd_begin_rendering(VkCommandBuffer cmd, LaharWindow* window);
+
+
+
+
+
+
+
+
+
+
+/** Register a custom language compiler with lahar. Whatever
+ * language is set should also be used on the shader stages
+ * to trigger this compiler.
+ *
+ * @param lahar The lahar instance
+ * @param langauge The name of the language to use
+ * @param compiler_func The function to call to compile the shader
+ * @param release_func The function to call to release resources generated by the compiler
+ */
+uint32_t lahar_shader_register_compiler(
+    const char* language,
+    void* user_data,
+    LaharShaderCompileFunc compiler_func,
+    LaharShaderCompileReleaseFunc release_func
+);
+
+struct LaharShaderStage {
+    VkShaderStageFlagBits stage;
+    const void* code;
+    uint64_t length;
+    const char* lang;
+    const char* entrypoint;
+};
+
+enum LaharShaderBlendMode {
+    LAHAR_SBM_DEFAULT = 0,
+    LAHAR_SBM_OPAQUE = 1,
+    LAHAR_SBM_ALPHA = 2,
+    LAHAR_SBM_ADDITIVE = 3,
+    LAHAR_SBM_PREMULTIPLIED = 4,
+    LAHAR_SBM_MULTIPLICATIVE = 5
+};
+
+// is intentionally the base vulkan set + 1
+enum LaharShaderTopology {
+    LAHAR_ST_DEFAULT = 0,
+    LAHAR_ST_POINT_LIST = 1,
+    LAHAR_ST_LINE_LIST = 2,
+    LAHAR_ST_LINE_STRIP = 3,
+    LAHAR_ST_TRIANGLE_LIST = 4,
+    LAHAR_ST_TRIANGLE_STRIP = 5,
+    LAHAR_ST_TRIANGLE_FAN = 6,
+    LAHAR_ST_LINE_LIST_WITH_ADJACENCY = 7,
+    LAHAR_ST_LINE_STRIP_WITH_ADJACENCY = 8,
+    LAHAR_ST_TRIANGLE_LIST_WITH_ADJACENCY = 9,
+    LAHAR_ST_TRIANGLE_STRIP_WITH_ADJACENCY = 10,
+    LAHAR_ST_PATCH_LIST = 11,
+};
+
+enum LaharShaderDepthTestMode {
+    LAHAR_SDTM_DEFAULT = 0,
+    LAHAR_SDTM_OFF = 1,
+    LAHAR_SDTM_ON = 2,
+};
+
+enum LaharShaderDepthWriteMode {
+    LAHAR_SDWM_DEFAULT = 0,
+    LAHAR_SDWM_OFF = 1,
+    LAHAR_SDWM_ON = 2,
+};
+
+enum LaharShaderDepthCompareOp {
+    LAHAR_SDCO_DEFAULT = 0,
+    LAHAR_SDCO_NEVER = 1,
+    LAHAR_SDCO_LESS = 2,
+    LAHAR_SDCO_EQUAL = 3,
+    LAHAR_SDCO_LESS_OR_EQUAL = 4,
+    LAHAR_SDCO_GREATER = 5,
+    LAHAR_SDCO_NOT_EQUAL = 6,
+    LAHAR_SDCO_GREATER_OR_EQUAL = 7,
+    LAHAR_SDCO_ALWAYS = 8,
+};
+
+enum LaharShaderCullMode {
+    LAHAR_SCM_DEFAULT = 0,
+    LAHAR_SCM_BACK = 1,
+    LAHAR_SCM_FRONT = 2,
+    LAHAR_SCM_OFF = 3,
+};
+
+enum LaharShaderFaceMode {
+    LAHAR_SFM_DEFAULT = 0,
+    LAHAR_SFM_FRONT_CCW = 1,
+    LAHAR_SFM_FRONT_CW = 2,
+};
+
+enum LaharShaderDynamicFlags {
+    LAHAR_SDF_DEFAULT = 0,
+    LAHAR_SDF_BASIC = 1 << 0,           // The viewport and the scissor, the default
+    LAHAR_SDF_DEPTH_BIAS = 1 << 1,      // The depth bias
+    LAHAR_SDF_BLEND_CONST = 1 << 2,     // The blend constants
+    LAHAR_SDF_DEPTH_STENCIL = 1 << 3,   // depth [test enable, write enable, compare op] + stencil [reference, compare mask, write mask]
+    LAHAR_SDF_CULL = 1 << 4,            // cull mode and front face
+
+    LAHAR_SDF_ALL = 0x7FFFFFFF
+};
+
+struct LaharShaderBuilder {
+    LaharShaderStage stages[LAHAR_MAX_SHADER_STAGES];
+    uint32_t stage_count;
+
+    VkVertexInputAttributeDescription* attrib_descriptions;
+    VkVertexInputBindingDescription* binding_descriptions;
+    uint32_t attrib_count;
+    uint32_t binding_count;
+
+    VkFormat surface_color_format;
+    VkFormat surface_depth_format;
+    VkFormat surface_stencil_format;
+    VkPipelineColorBlendAttachmentState blend_states[LAHAR_MAX_ATTACHMENTS];
+    uint32_t blend_state_count;
+
+    LaharShaderBlendMode blend;
+    LaharShaderTopology topology;
+    LaharShaderDepthTestMode depth_test;
+    LaharShaderDepthWriteMode depth_write;
+    LaharShaderDepthCompareOp depth_compare_op;
+    LaharShaderCullMode cull_mode;
+    LaharShaderFaceMode face_mode;
+    LaharShaderDynamicFlags dynamic_mode;
+    bool wireframe;
+    bool all_dynamic;
+    bool skip_validation;
+    bool force_dynamic;
+
+    void* pNext;
+    VkPipelineCreateFlags flags;
+    const VkPipelineVertexInputStateCreateInfo* pVertexInputState;
+    const VkPipelineInputAssemblyStateCreateInfo* pInputAssemblyState;
+    const VkPipelineTessellationStateCreateInfo* pTessellationState;
+    const VkPipelineViewportStateCreateInfo* pViewportState;
+    const VkPipelineRasterizationStateCreateInfo* pRasterizationState;
+    const VkPipelineMultisampleStateCreateInfo* pMultisampleState;
+    const VkPipelineDepthStencilStateCreateInfo* pDepthStencilState;
+    const VkPipelineColorBlendStateCreateInfo* pColorBlendState;
+    const VkPipelineDynamicStateCreateInfo* pDynamicState;
+    VkPipelineLayout layout;
+    VkRenderPass renderPass;
+    uint32_t subpass;
+    bool use_subpass_value; // have to set this if subpass is set, since 0 is a valid default
+};
+
+enum LaharShaderVarStorageClass {
+    LAHAR_SVSC_UNKNOWN = 0,
+    LAHAR_SVSC_INPUT = 1,
+    LAHAR_SVSC_UNIFORM_BUFFER = 2,
+    LAHAR_SVSC_STORAGE_BUFFER = 3,
+    LAHAR_SVSC_PUSH_CONSTANT = 4,
+    LAHAR_SVSC_UNIFORM_CONSTANT = 5,
+};
+
+enum LaharShaderVarType {
+    LAHAR_SVT_UNKNOWN = 0,
+    LAHAR_SVT_VOID,
+    LAHAR_SVT_BOOL,
+    LAHAR_SVT_INT,
+    LAHAR_SVT_UINT,
+    LAHAR_SVT_HALF,
+    LAHAR_SVT_FLOAT,
+    LAHAR_SVT_DOUBLE,
+    LAHAR_SVT_BVEC2,
+    LAHAR_SVT_BVEC3,
+    LAHAR_SVT_BVEC4,
+    LAHAR_SVT_IVEC2,
+    LAHAR_SVT_IVEC3,
+    LAHAR_SVT_IVEC4,
+    LAHAR_SVT_UVEC2,
+    LAHAR_SVT_UVEC3,
+    LAHAR_SVT_UVEC4,
+    LAHAR_SVT_DVEC2,
+    LAHAR_SVT_DVEC3,
+    LAHAR_SVT_DVEC4,
+    LAHAR_SVT_VEC2,
+    LAHAR_SVT_VEC3,
+    LAHAR_SVT_VEC4,
+    LAHAR_SVT_MAT2X3,
+    LAHAR_SVT_MAT2X4,
+    LAHAR_SVT_MAT3X2,
+    LAHAR_SVT_MAT3X4,
+    LAHAR_SVT_MAT4X2,
+    LAHAR_SVT_MAT4X3,
+    LAHAR_SVT_MAT2,
+    LAHAR_SVT_MAT3,
+    LAHAR_SVT_MAT4,
+    LAHAR_SVT_DMAT2X3,
+    LAHAR_SVT_DMAT2X4,
+    LAHAR_SVT_DMAT3X2,
+    LAHAR_SVT_DMAT3X4,
+    LAHAR_SVT_DMAT4X2,
+    LAHAR_SVT_DMAT4X3,
+    LAHAR_SVT_DMAT2,
+    LAHAR_SVT_DMAT3,
+    LAHAR_SVT_DMAT4,
+    LAHAR_SVT_SAMPLER,
+    LAHAR_SVT_IMAGE,
+    LAHAR_SVT_SAMPLER_IMAGE,
+    LAHAR_SVT_STRUCT,
+    LAHAR_SVT_ARRAY,
+    LAHAR_SVT_POINTER,
+};
+
+struct LaharShaderVarInfo {
+    const char* path;                           // A path to the variable, such as mesh.transform
+    LaharShaderVarStorageClass storage_class;   // The spir-v storage class
+
+    uint32_t offset;                            // The offset in bytes inside the parent type
+    uint32_t size;                              // The size in bytes
+    uint32_t stride;                            // The stride, if a matrix or array type
+
+    uint32_t set;                               // The set the uniform belongs to
+    uint32_t binding;                           // The binding the uniform belongs to
+    uint32_t location;                          // The location of the vertex input
+
+    LaharShaderVarType type;                    // The deduced shader var type
+    VkShaderStageFlagBits stages;               // The stages this uniform is used in
+    uint32_t array_size;                        // The array size, 0 for runtime arrays
+
+    uint32_t parent_var;                        // The parent of this var/type, UINT32_MAX if none
+    uint32_t child_vars_begin;                  // The beginning of the child vars, UINT32_MAX if none
+    uint32_t child_vars_end;                    // The end of the child vars, UINT32_MAX if none
+
+    uint32_t spv_var_id;                        // The variable ID from the spir-v
+    uint32_t spv_type_id;                       // The type ID from the spir-v
+};
+
+
+/* ============================================================================
+ * Shader Builder Functions
+ * ============================================================================
+ * These functions provide a builder pattern API for configuring shader pipelines.
+ * Usage:
+ *   1. Zero-init a LaharShaderBuilder struct
+ *   2. Configure using lahar_shader_builder_*() functions
+ *   3. Call lahar_shader_build() to create the pipeline
+ */
+
+
+/* Stages must be set. Vertex inputs must be set if the shader uses them. */
+
+/** Set the stages, overwriting any that are currently stored */
+void lahar_shader_builder_set_stages(LaharShaderBuilder* builder, LaharShaderStage* stages, uint32_t count);
+/** Add a stage to the stages currently stored */
+void lahar_shader_builder_add_stage(LaharShaderBuilder* builder, LaharShaderStage* stage);
+
+/** Set the vertx input attributes and bindings. This just stores the pointers, so it must
+ * survive until build is called.
+ */
+void lahar_shader_builder_set_vertex_input(
+    LaharShaderBuilder* builder,
+    VkVertexInputAttributeDescription* attribs,
+    VkVertexInputBindingDescription* bindings,
+    uint32_t attrib_count,
+    uint32_t binding_count
+);
+
+/* Must call set window OR set formats + set blend states */
+
+/** Set the window the shader must be compatible with. This infers the formats and blend states. */
+void lahar_shader_builder_set_window(LaharShaderBuilder* builder, LaharWindow* window);
+
+/** Set the surface formats of the surface the shader must be compatible with */
+void lahar_shader_builder_set_formats(LaharShaderBuilder* builder, VkFormat color, VkFormat depth, VkFormat stencil);
+/** Set the blend states for the attachments the shader will use */
+void lahar_shader_builder_set_blend_states(LaharShaderBuilder* builder, VkPipelineColorBlendAttachmentState* states, uint32_t state_count);
+
+/* Simplified parameters for quick configuration of common options */
+
+/** Set the simplified blend mode. See LaharShaderBlendMode for options */
+void lahar_shader_builder_set_blend_mode(LaharShaderBuilder* builder, LaharShaderBlendMode blend);
+/** Set the topology. See LaharShaderTopology for options */
+void lahar_shader_builder_set_topology(LaharShaderBuilder* builder, LaharShaderTopology topology);
+/** Set the depth testing mode. See LaharShaderDepthTestMode for options */
+void lahar_shader_builder_set_depth_test(LaharShaderBuilder* builder, LaharShaderDepthTestMode depth_test);
+/** Set the depth write mode. See LaharShaderDepthWriteMode for options */
+void lahar_shader_builder_set_depth_write(LaharShaderBuilder* builder, LaharShaderDepthWriteMode depth_write);
+/** Set the depth compare op. See LaharShaderDepthCompareOp for options */
+void lahar_shader_builder_set_depth_compare_op(LaharShaderBuilder* builder, LaharShaderDepthCompareOp depth_compare_op);
+/** Set the cull mode. See LaharShaderCullMode for options */
+void lahar_shader_builder_set_cull_mode(LaharShaderBuilder* builder, LaharShaderCullMode cull_mode);
+/** Set the cull face. See LaharShaderFaceMode for options */
+void lahar_shader_builder_set_face_mode(LaharShaderBuilder* builder, LaharShaderFaceMode face_mode);
+/** Set the what parts of a shader are dynamic. See LaharShaderDynamicFlags to see options. NOTE THAT IT DEFAULTS TO SOME DYNAMIC STATE */
+void lahar_shader_builder_set_dynamic_flags(LaharShaderBuilder* builder, LaharShaderDynamicFlags dynamic_mode);
+/** Enable literally every possible dynamic state in a shader. You _probably_ don't want this. */
+void lahar_shader_builder_enable_all_dynamic(LaharShaderBuilder* builder, bool all_dynamic);
+/** Set the shader to draw in wireframe mode */
+void lahar_shader_builder_set_wireframe(LaharShaderBuilder* builder, bool wireframe);
+/** Disable validation of inputs against the SPIRV */
+void lahar_shader_builder_skip_validation(LaharShaderBuilder* builder, bool skip_validation);
+
+/* Parameters that will be passed verbatim to the VkPiplineCreateInfo, overriding other above settings */
+
+void lahar_shader_builder_set_pnext(LaharShaderBuilder* builder, void* pNext);
+void lahar_shader_builder_set_flags(LaharShaderBuilder* builder, VkPipelineCreateFlags flags);
+void lahar_shader_builder_set_vertex_input_state(LaharShaderBuilder* builder, const VkPipelineVertexInputStateCreateInfo* pVertexInputState);
+void lahar_shader_builder_set_input_assembly_state(LaharShaderBuilder* builder, const VkPipelineInputAssemblyStateCreateInfo* pInputAssemblyState);
+void lahar_shader_builder_set_tessellation_state(LaharShaderBuilder* builder, const VkPipelineTessellationStateCreateInfo* pTessellationState);
+void lahar_shader_builder_set_viewport_state(LaharShaderBuilder* builder, const VkPipelineViewportStateCreateInfo* pViewportState);
+void lahar_shader_builder_set_rasterization_state(LaharShaderBuilder* builder, const VkPipelineRasterizationStateCreateInfo* pRasterizationState);
+void lahar_shader_builder_set_multisample_state(LaharShaderBuilder* builder, const VkPipelineMultisampleStateCreateInfo* pMultisampleState);
+void lahar_shader_builder_set_depth_stencil_state(LaharShaderBuilder* builder, const VkPipelineDepthStencilStateCreateInfo* pDepthStencilState);
+void lahar_shader_builder_set_color_blend_state(LaharShaderBuilder* builder, const VkPipelineColorBlendStateCreateInfo* pColorBlendState);
+void lahar_shader_builder_set_dynamic_state(LaharShaderBuilder* builder, const VkPipelineDynamicStateCreateInfo* pDynamicState);
+void lahar_shader_builder_set_layout(LaharShaderBuilder* builder, VkPipelineLayout layout);
+void lahar_shader_builder_set_render_pass(LaharShaderBuilder* builder, VkRenderPass renderPass);
+void lahar_shader_builder_set_subpass(LaharShaderBuilder* builder, uint32_t subpass);
+
+/** Builds a Vulkan graphics pipeline from the configured shader info.
+ *
+ * This is the finalization step of the shader builder pattern. After configuring
+ * a LaharShaderBuilder struct using lahar_shader_builder_*() functions, call this
+ * function to create the actual Vulkan pipeline.
+ *
+ * Required fields (must be set via builder functions):
+ *   - stages (via lahar_shader_builder_set_stages)
+ *   - window (via lahar_shader_builder_set_window)
+ *
+ * All other fields are optional and will use sensible defaults if not set.
+ * Verbatim Vulkan state structs (pVertexInputState, pRasterizationState, etc.)
+ * always override the corresponding simplified parameters when set.
+ *
+ * @param info The configured shader info struct
+ * @param pipeline (out) The created pipeline, or VK_NULL_HANDLE if failed
+ * @param layout (out) The layout, _IF_ one was created by this function, else VK_NULL_HANDLE
+ * @return Error code (LAHAR_ERR_SUCCESS on success)
+ */
+uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, VkPipelineLayout* layout);
+
+/** Get the string representation of a shader var type*/
+const char* lahar_shader_var_type_string(LaharShaderVarType svt);
+
+/** Get the string representation of a VkFormat */
+const char* lahar_vkformat_string(VkFormat format);
+
+/* Get the corresponding VkFormat for a var type used as a vertex input* */
+uint32_t lahar_shader_var_type_to_input_type(LaharShaderVarType svt, VkFormat* format_out);
+
+/** Given a set of stages, introspect all the inputs, descriptors, and push constants.
+ * The output of this function is only guaranteed to live until the next call into lahar
+ *
+ * @param stages A list of stages, terminated by an empty stage
+ * @param num_infos (out) The number of info structs that will be/has been written
+ * @param info (out) (nullable) The array to write the info structs into
+ */
+uint32_t lahar_shader_introspect(const LaharShaderStage* stages, uint32_t num_stages, uint32_t* num_infos, LaharShaderVarInfo* infos);
+
+/**
+ * A convenience for pretty-printing the results of an introspected shader. Useful
+ * for verifying your shader is what you think it is, and that Lahar introspected it
+ * correctly.
+ *
+ * @param infos The output of lahar_shader_introspect
+ * @param count The number of infos, also the output of lahar_shader_introspect
+ */
+void lahar_shader_introspection_print(const LaharShaderVarInfo* infos, uint32_t count);
 
 extern Lahar __lahar_instance;
 extern Lahar* lahar;
-
+#define LAHAR_VERSION VK_MAKE_VERSION(2, 0, 0)
 
 #if defined(__cplusplus) && defined(LAHAR_C_LINKAGE)
 }
@@ -1900,7 +2452,6 @@ extern PFN_vkAcquireNextImage2KHR vkAcquireNextImage2KHR;
 
 
 
-
 // #######################
 // ## LAHAR SOURCE CODE ##
 // #######################
@@ -1919,23 +2470,37 @@ extern PFN_vkAcquireNextImage2KHR vkAcquireNextImage2KHR;
 #endif
 
 #ifndef LAHAR_M_ARENA_SIZE 
-    #define LAHAR_M_ARENA_SIZE 32768
+    #define LAHAR_M_ARENA_SIZE 65536
 #endif
 
 #ifndef LAHAR_M_CHECK_CT
     #define LAHAR_M_CHECK_CT 16
 #endif
 
+#ifndef LAHAR_DEFAULT_ALIGNMENT
+    #ifdef __cplusplus
+        #define LAHAR_DEFAULT_ALIGNMENT alignof(max_align_t)
+    #else
+        #define LAHAR_DEFAULT_ALIGNMENT _Alignof(max_align_t)
+    #endif
+#endif
+
 #include <stdarg.h>
+#include <inttypes.h>
 
 
 #ifdef __linux__
 #include <signal.h>
 
+#ifndef LAHAR_DEBUG_BREAK
+    #define LAHAR_DEBUG_BREAK raise(SIGTRAP)
+#endif
+
 #define LAHAR_ASSERT(cond) do { \
     if (!(cond)) { \
         fprintf(stderr, "LAHAR_ASSERT failed: %s at %s:%d\n", #cond, __FILE__, __LINE__); \
-        raise(SIGTRAP); \
+        LAHAR_DEBUG_BREAK; \
+        exit(1); \
     } \
 } while(0)
 #else
@@ -2021,7 +2586,7 @@ void __lahar_info(const char* msg, ...) {
 }
 
 void __lahar_warn(const char* msg, ...) {
-    if (lahar->debug_level <= LAHAR_DEBUG_TRACE) {
+    if (lahar->debug_level <= LAHAR_DEBUG_WARNING) {
         va_list ap;
         va_start(ap, msg);
 
@@ -2035,7 +2600,7 @@ void __lahar_warn(const char* msg, ...) {
 }
 
 void __lahar_error(const char* msg, ...) {
-    if (lahar->debug_level <= LAHAR_DEBUG_TRACE) {
+    if (lahar->debug_level <= LAHAR_DEBUG_ERROR) {
         va_list ap;
         va_start(ap, msg);
 
@@ -2147,10 +2712,7 @@ static VkBaseInStructure* __lahar_pnext_fetch(void* chain, VkStructureType type)
 
         return LAHAR_ERR_SUCCESS;
     }
-
-#endif
-
-#if defined(LAHAR_USE_SDL2) || defined(LAHAR_USE_SDL3)
+#elif defined(LAHAR_USE_SDL2)
     uint32_t lahar_window_surface_create(LaharWindow* window, VkSurfaceKHR* surface) {
         if (!SDL_Vulkan_CreateSurface(window, lahar->instance, surface)) {
             fprintf(stderr, "%s\n", SDL_GetError());
@@ -2169,9 +2731,7 @@ static VkBaseInStructure* __lahar_pnext_fetch(void* chain, VkStructureType type)
         *height = (uint32_t)h;
         return LAHAR_ERR_SUCCESS;
     }
-#endif
 
-#if defined(LAHAR_USE_SDL2)
     uint32_t lahar_window_get_extensions(LaharWindow* window, uint32_t* ext_count, const char** extensions) {
         if (!SDL_Vulkan_GetInstanceExtensions(window, ext_count, extensions)) {
             return LAHAR_ERR_DEPENDENCY_FAILED;
@@ -2180,6 +2740,25 @@ static VkBaseInStructure* __lahar_pnext_fetch(void* chain, VkStructureType type)
         return LAHAR_ERR_SUCCESS;
     }
 #elif defined(LAHAR_USE_SDL3)
+    uint32_t lahar_window_surface_create(LaharWindow* window, VkSurfaceKHR* surface) {
+        if (!SDL_Vulkan_CreateSurface(window, lahar->instance, surface)) {
+            fprintf(stderr, "%s\n", SDL_GetError());
+            return LAHAR_ERR_DEPENDENCY_FAILED;
+        }
+
+        return LAHAR_ERR_SUCCESS;
+    }
+
+    uint32_t lahar_window_get_size(LaharWindow* window, uint32_t* width, uint32_t* height) {
+        int w, h;
+
+        SDL_Vulkan_GetDrawableSize(window, &w, &h);
+
+        *width = (uint32_t)w;
+        *height = (uint32_t)h;
+        return LAHAR_ERR_SUCCESS;
+    }
+
     uint32_t lahar_window_get_extensions(LaharWindow* window, uint32_t* ext_count, const char** extensions) {
         uint32_t count;
         char const* const* ext = SDL_Vulkan_GetInstanceExtensions(&count);
@@ -2192,6 +2771,22 @@ static VkBaseInStructure* __lahar_pnext_fetch(void* chain, VkStructureType type)
             }
         }
 
+        return LAHAR_ERR_SUCCESS;
+    }
+#elif !defined(LAHAR_CUSTOM_WINDOW)
+    uint32_t lahar_window_surface_create(LaharWindow* window, VkSurfaceKHR* surface) {
+        if (surface) { *surface = VK_NULL_HANDLE; }
+        return LAHAR_ERR_SUCCESS;
+    }
+
+    uint32_t lahar_window_get_size(LaharWindow* window, uint32_t* width, uint32_t* height) {
+        if (width) { *width = 0; }
+        if (height) { *height = 0; }
+        return LAHAR_ERR_SUCCESS;
+    }
+
+    uint32_t lahar_window_get_extensions(LaharWindow* window, uint32_t* ext_count, const char** extensions) {
+        if (ext_count) { *ext_count = 0; }
         return LAHAR_ERR_SUCCESS;
     }
 #endif
@@ -2336,13 +2931,23 @@ void lahar_temp_mpop() {
     }
 }
 
-void* lahar_temp_alloc(size_t bytes) {
-    size_t remain = sizeof(__marena) - __mpos;
-    LAHAR_ASSERT(remain >= bytes); // if this trips, you need to define LAHAR_M_ARENA_SIZE bigger
 
-    void* ret = (void*)&__marena[__mpos];
-    __mpos += bytes;
+void* lahar_temp_alloc_aligned(size_t bytes, size_t alignment) {
+    uintptr_t current = (uintptr_t)&__marena[__mpos];
+    size_t padding = (-(size_t)current) & (alignment - 1);
+    
+    size_t real_amt = padding + bytes;
+    
+    LAHAR_ASSERT(sizeof(__marena) - __mpos >= real_amt);
+    
+    void* ret = &__marena[__mpos + padding];
+    __mpos += real_amt;
+    memset(ret, 0, bytes);
     return ret;
+}
+
+void* lahar_temp_alloc(size_t bytes) {
+    return lahar_temp_alloc_aligned(bytes, LAHAR_DEFAULT_ALIGNMENT);
 }
 
 char* lahar_temp_strdup(const char* str) {
@@ -2372,6 +2977,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL __lahar_default_dbgcallback(
         case VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT:
             printf("[VKERROR] %s\n", pcallbackdata->pMessage);
             break;
+        case VK_DEBUG_UTILS_MESSAGE_SEVERITY_FLAG_BITS_MAX_ENUM_EXT:
         default:
             break;
     }
@@ -2407,7 +3013,11 @@ static int64_t __lahar_default_scorer(const LaharDeviceInfo* devinfo) {
 
     // Rescale it so a 100gb gpu gets 1000 points
     // So for example, an 8gb gpu gets about 80 points
-    size_t remapped_memory = (local_memory / 107374182400.0) * 1000;
+    const double hundred_gib = 107374182400.0;
+    const double rescaled_base = (double)local_memory / hundred_gib;
+    const double rescaled = rescaled_base * 1000.0;
+
+    const size_t remapped_memory = (size_t)rescaled;
     score += remapped_memory;
 
     return score;
@@ -2429,8 +3039,6 @@ static uint32_t __lahar_default_surface_format_chooser(LaharWindowState* window_
 }
 
 static uint32_t __lahar_default_surface_present_mode_chooser(LaharWindowState* window_state, LaharDeviceInfo* physdev_info, VkPresentModeKHR* present_mode_out) {
-    uint32_t err = LAHAR_ERR_SUCCESS;
-
     for (size_t i = 0; i < physdev_info->present_mode_count; i++) {
         if (physdev_info->present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
             *present_mode_out = VK_PRESENT_MODE_MAILBOX_KHR;
@@ -2456,29 +3064,42 @@ static uint32_t __lahar_default_resizer(LaharWindow* window) {
     LaharSurfaceFormatChooseFunc choose_format = lahar->format_chooser ? lahar->format_chooser : __lahar_default_surface_format_chooser;
     LaharSurfacePresentModeChooseFunc choose_mode = lahar->present_chooser ? lahar->present_chooser : __lahar_default_surface_present_mode_chooser;
     VkSurfaceCapabilitiesKHR surface_caps = ZINIT;
-    LaharAttachmentConfig* color_conf = &winstate->attachment_configs[LAHAR_ATT_COLOR_INDEX];
+    LaharAttachmentConfig* color_conf = lahar_window_attachment_config_color(window);
     uint32_t queue_indices[2] = { lahar->physdev_info.graphics_queue_index, lahar->physdev_info.present_queue_index };
     uint32_t queue_index_count = queue_indices[0] == queue_indices[1] ? 0 : 2;
     VkSwapchainCreateInfoKHR create_info = ZINIT;
+
+    uint32_t window_width = 0;
+    uint32_t window_height = 0;
+
+    if ((err = lahar_window_get_size(winstate->window, &window_width, &window_height))) {
+        goto end;
+    }
+
+    if (!color_conf) {
+        lahar_warn("No color attachment on window");
+        return LAHAR_ERR_INVALID_STATE;
+    }
 
     if ((err = lahar_window_wait_inactive(window))) {
         goto end;
     }
 
     if (winstate->attachment_count > 1 && !lahar->gpu_allocator) {
+        lahar_warn("Non-color attachments requested, no gpu allocator provided");
         err = LAHAR_ERR_INVALID_STATE;
         goto end;
     }
 
-    for (size_t i = 0; i < winstate->swap_size; i++) {
-        LaharAttachment* attachment = &winstate->attachments[LAHAR_ATT_COLOR_INDEX][i];
+    for (uint32_t i = 0; i < winstate->swap_size; i++) {
+        LaharAttachment* attachment = lahar_window_attachment_color(window, i);
 
         if (attachment->view != VK_NULL_HANDLE && vkDestroyImageView) {
             vkDestroyImageView(lahar->device, attachment->view, lahar->vkalloc);
         }
     }
 
-    for (size_t i = 1; i < winstate->attachment_count; i++) {
+    for (uint32_t i = 1; i < winstate->attachment_count; i++) {
         LaharAttachment* attachment_list = winstate->attachments[i];
 
         for (size_t j = 0; j < winstate->swap_size; j++) {
@@ -2523,10 +3144,8 @@ static uint32_t __lahar_default_resizer(LaharWindow* window) {
     create_info.compositeAlpha = winstate->alpha ? winstate->alpha : VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     create_info.clipped = VK_TRUE;
     create_info.oldSwapchain = VK_NULL_HANDLE;
-
-    if ((err = lahar_window_get_size(winstate->window, &create_info.imageExtent.width, &create_info.imageExtent.height))) {
-        goto end;
-    }
+    create_info.imageExtent.width = window_width;
+    create_info.imageExtent.height = window_height;
 
     if (create_info.imageExtent.width > surface_caps.maxImageExtent.width) {
         create_info.imageExtent.width = surface_caps.maxImageExtent.width;
@@ -2571,7 +3190,7 @@ static uint32_t __lahar_default_resizer(LaharWindow* window) {
 
     vkGetSwapchainImagesKHR(lahar->device, winstate->swapchain, &winstate->swap_size, swap_imgs);
 
-    for (size_t j = 0; j < winstate->swap_size; j++) {
+    for (uint32_t j = 0; j < winstate->swap_size; j++) {
         VkImageViewCreateInfo view_create_info = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
             .image = swap_imgs[j],
@@ -2597,9 +3216,10 @@ static uint32_t __lahar_default_resizer(LaharWindow* window) {
             goto end;
         }
 
-        winstate->attachments[LAHAR_ATT_COLOR_INDEX][j].image = swap_imgs[j];
-        winstate->attachments[LAHAR_ATT_COLOR_INDEX][j].view = swap_views[j];
-        winstate->attachments[LAHAR_ATT_COLOR_INDEX][j].layout = VK_IMAGE_LAYOUT_UNDEFINED;
+        LaharAttachment* color = lahar_window_attachment_color(window, j);
+        color->image = swap_imgs[j];
+        color->view = swap_views[j];
+        color->layout = VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
     if (winstate->attachment_count > 1 && !lahar->gpu_allocator) {
@@ -2646,6 +3266,9 @@ static uint32_t __lahar_default_resizer(LaharWindow* window) {
             attachment->layout = VK_IMAGE_LAYOUT_UNDEFINED;
         }
     }
+
+    winstate->width = window_width;
+    winstate->height = window_height;
 
 end:
     lahar_temp_mpop();
@@ -2936,11 +3559,12 @@ uint32_t lahar_builder_window_register(LaharWindow* window, LaharWindowProfile w
 
         } break;
 
-        case LAHAR_WINPROF_COLOR_DEPTH: {
+        case LAHAR_WINPROF_COLOR_DEPTH_STENCIL: {
             // Attachment 0 is ignored anyway, but must be specified for color
             LaharAttachmentConfig attachments[] = {
                 ZINIT,
                 {
+                    .role = LAHAR_ATTROLE_DEPTH_STENCIL,
                     .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                     .description = {
                         .format = VK_FORMAT_D32_SFLOAT,
@@ -3048,6 +3672,8 @@ void lahar_deinit(void) {
     for (size_t i = 0; i < lahar->window_count; i++) {
         LaharWindowState* state = &lahar->windows[i];
 
+        if (!state) { continue; }
+
         if (state->commands) {
             lahar_free(state->commands);
         }
@@ -3084,15 +3710,17 @@ void lahar_deinit(void) {
 
 
         // Special pass required to destroy _just_ the views in the color attachment
-        for (size_t j = 0; j < state->swap_size; j++) {
-            LaharAttachment* attachment = &state->attachments[LAHAR_ATT_COLOR_INDEX][j];
+        for (uint32_t j = 0; j < state->swap_size; j++) {
+            LaharAttachment* attachment = lahar_window_attachment_color(lahar->windows[i].window, j);
 
-            if (attachment->view != VK_NULL_HANDLE && vkDestroyImageView) {
+            if (attachment && attachment->view != VK_NULL_HANDLE && vkDestroyImageView) {
                 vkDestroyImageView(lahar->device, attachment->view, lahar->vkalloc);
             }
         }
 
-        lahar_free(state->attachments[LAHAR_ATT_COLOR_INDEX]);
+        if (state->attachments && state->attachments[0]) {
+            lahar_free(state->attachments[0]);
+        }
 
         for (size_t j = 1; j < state->attachment_count; j++) {
             LaharAttachment* attachment_list = state->attachments[j];
@@ -3201,7 +3829,7 @@ void lahar_deinit(void) {
 uint32_t __lahar_temp_extensions(LaharWindow* window, uint32_t* count, char*** ext_out) {
     uint32_t err = LAHAR_ERR_SUCCESS;
 
-    uint32_t ext_count = lahar->extensions.rie_count;
+    uint32_t ext_count = (uint32_t)lahar->extensions.rie_count;
     char** win_exts = NULL;
     char** extensions = NULL;
     size_t i = 0;
@@ -3211,7 +3839,7 @@ uint32_t __lahar_temp_extensions(LaharWindow* window, uint32_t* count, char*** e
     }
 
     uint32_t win_count = 0;
-    if ((err = lahar_window_get_extensions(lahar->windows[0].window, &win_count, NULL))) {
+    if ((err = lahar_window_get_extensions(window, &win_count, NULL))) {
         goto end;
     }
 
@@ -3219,7 +3847,7 @@ uint32_t __lahar_temp_extensions(LaharWindow* window, uint32_t* count, char*** e
 
     win_exts = (char**)lahar_temp_alloc(sizeof(char*) * win_count);
 
-    if ((err = lahar_window_get_extensions(lahar->windows[0].window, &win_count, (const char**)win_exts))) {
+    if ((err = lahar_window_get_extensions(window, &win_count, (const char**)win_exts))) {
         goto end;
     }
 
@@ -3256,8 +3884,10 @@ uint32_t __lahar_build_inst_extensions() {
     uint32_t prop_count;
     VkExtensionProperties* props = NULL;
 
+    LaharWindow* window = lahar->window_count ? lahar->windows[0].window : NULL;
+
     // Assume the first window is sufficient
-    __lahar_temp_extensions(lahar->windows[0].window, &ext_count, &extensions);
+    __lahar_temp_extensions(window, &ext_count, &extensions);
 
     if ((lahar->vkresult = vkEnumerateInstanceExtensionProperties(NULL, &prop_count, NULL)) != VK_SUCCESS) {
         err = LAHAR_ERR_VK_ERR;
@@ -3310,8 +3940,10 @@ uint32_t __lahar_build_instance(void) {
     const char* dbg_layer_name = "VK_LAYER_KHRONOS_validation";
     bool dbg_layer_found = false;
 
+    LaharWindow* window = lahar->window_count ? lahar->windows[0].window : NULL;
+
     // Assume the first window is sufficient
-    __lahar_temp_extensions(lahar->windows[0].window, &ext_count, &extensions);
+    __lahar_temp_extensions(window, &ext_count, &extensions);
 
     VkApplicationInfo appinfo = {
         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -3566,6 +4198,8 @@ uint32_t __lahar_build_device(void) {
     const char* dbg_layer_name = "VK_LAYER_KHRONOS_validation";
     bool has_dbg_layer = false;
 
+    VkDeviceCreateInfo device_create_info = ZINIT;
+
     if (lahar->wantvalidation) {
         uint32_t layer_count;
         vkEnumerateDeviceLayerProperties(lahar->physdev_info.physdev, &layer_count, NULL);
@@ -3614,19 +4248,17 @@ uint32_t __lahar_build_device(void) {
         }
     }
 
-    VkDeviceCreateInfo create_info = {
-        .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        .queueCreateInfoCount = queue_create_count,
-        .pQueueCreateInfos = queue_create_infos,
-        .enabledLayerCount = enabled_layer_count,
-        .ppEnabledLayerNames = &dbg_layer_name,
-        .enabledExtensionCount = 1,
-        .ppEnabledExtensionNames = &swap_ext_name,
-        .pEnabledFeatures = &device_features,
-        .pNext = pnext,
-    };
+    device_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    device_create_info.pNext = pnext;
+    device_create_info.queueCreateInfoCount = queue_create_count;
+    device_create_info.pQueueCreateInfos = queue_create_infos;
+    device_create_info.enabledLayerCount = enabled_layer_count;
+    device_create_info.ppEnabledLayerNames = &dbg_layer_name;
+    device_create_info.enabledExtensionCount = 1;
+    device_create_info.ppEnabledExtensionNames = &swap_ext_name;
+    device_create_info.pEnabledFeatures = &device_features;
 
-    if ((lahar->vkresult = vkCreateDevice(lahar->physdev_info.physdev, &create_info, lahar->vkalloc, &lahar->device)) != VK_SUCCESS) {
+    if ((lahar->vkresult = vkCreateDevice(lahar->physdev_info.physdev, &device_create_info, lahar->vkalloc, &lahar->device)) != VK_SUCCESS) {
         goto end;
     }
 
@@ -3668,7 +4300,7 @@ uint32_t __lahar_build_swapchain(void) {
     }
     #endif
 
-    for (size_t i = 0; i < lahar->window_count; i++) {
+    for (uint32_t i = 0; i < lahar->window_count; i++) {
         LaharWindowState* winstate = &lahar->windows[i];
         VkSurfaceCapabilitiesKHR surface_caps = ZINIT;
 
@@ -3685,7 +4317,8 @@ uint32_t __lahar_build_swapchain(void) {
             goto end;
         }
 
-        LaharAttachmentConfig* color_conf = &winstate->attachment_configs[LAHAR_ATT_COLOR_INDEX];
+        LaharAttachmentConfig* color_conf = lahar_window_attachment_config_color(winstate->window);
+        LAHAR_ASSERT(color_conf);
 
         uint32_t queue_indices[2] = { lahar->physdev_info.graphics_queue_index, lahar->physdev_info.present_queue_index };
         uint32_t queue_index_count = queue_indices[0] == queue_indices[1] ? 0 : 2;
@@ -3759,7 +4392,7 @@ uint32_t __lahar_build_swapchain(void) {
 
         vkGetSwapchainImagesKHR(lahar->device, winstate->swapchain, &winstate->swap_size, swap_imgs);
 
-        for (size_t j = 0; j < winstate->swap_size; j++) {
+        for (uint32_t j = 0; j < winstate->swap_size; j++) {
             VkImageViewCreateInfo view_create_info = {
                 .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                 .image = swap_imgs[j],
@@ -3785,8 +4418,9 @@ uint32_t __lahar_build_swapchain(void) {
                 goto end;
             }
 
-            winstate->attachments[LAHAR_ATT_COLOR_INDEX][j].image = swap_imgs[j];
-            winstate->attachments[LAHAR_ATT_COLOR_INDEX][j].view = swap_views[j];
+            LaharAttachment* color = lahar_window_attachment_color(winstate->window, j);
+            color->image = swap_imgs[j];
+            color->view = swap_views[j];
         }
 
         if (winstate->attachment_count > 1 && !lahar->gpu_allocator) {
@@ -4057,6 +4691,18 @@ uint32_t lahar_window_present(LaharWindow* window) {
     return LAHAR_ERR_SUCCESS;
 }
 
+VkCommandBuffer lahar_window_command_buffer(LaharWindow* window) {
+    if (!window) { return VK_NULL_HANDLE; }
+
+    const LaharWindowState* state = lahar_window_state(window);
+    if (!state) { return VK_NULL_HANDLE; }
+
+    if (state->frame_phase != LAHAR_FRAME_PHASE_DRAW) { return VK_NULL_HANDLE; }
+
+    return state->commands[state->frame_index];
+}
+
+
 
 VkAccessFlags __lahar_access_mask(VkImageLayout layout) {
     switch (layout) {
@@ -4117,7 +4763,7 @@ VkImageAspectFlags __lahar_aspect_mask_from_usage(VkImageUsageFlags usage, VkFor
     return VK_IMAGE_ASPECT_COLOR_BIT;
 }
 
-uint32_t lahar_window_attachment_transition(LaharWindow* window, uint32_t attachment_index, VkImageLayout layout, VkCommandBuffer cmd) {
+uint32_t lahar_cmd_attachment_transition(VkCommandBuffer cmd, LaharWindow* window, uint32_t attachment_index, VkImageLayout layout) {
     if (!window || cmd == VK_NULL_HANDLE) { return LAHAR_ERR_ILLEGAL_PARAMS; }
 
     LaharWindowState* winstate = lahar_window_state(window);
@@ -4133,7 +4779,7 @@ uint32_t lahar_window_attachment_transition(LaharWindow* window, uint32_t attach
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             .pNext = NULL,
             .srcAccessMask = __lahar_access_mask(attachment->layout),
-            .dstAccessMask = __lahar_access_mask(attachment->layout),
+            .dstAccessMask = __lahar_access_mask(layout),
             .oldLayout = attachment->layout,
             .newLayout = layout,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -4149,7 +4795,7 @@ uint32_t lahar_window_attachment_transition(LaharWindow* window, uint32_t attach
         };
 
         VkPipelineStageFlags srcStage = __lahar_pipeline_stage(attachment->layout);
-        VkPipelineStageFlags dstStage = __lahar_pipeline_stage(attachment->layout);
+        VkPipelineStageFlags dstStage = __lahar_pipeline_stage(layout);
 
         vkCmdPipelineBarrier(cmd,
             srcStage, dstStage,
@@ -4176,6 +4822,1135 @@ uint32_t lahar_window_wait_inactive(LaharWindow* window) {
     return LAHAR_ERR_SUCCESS;
 }
 
+uint32_t lahar_cmd_begin_rendering(VkCommandBuffer cmd, LaharWindow* window) {
+    lahar_temp_mcheck();
+
+    uint32_t err = LAHAR_ERR_SUCCESS;
+
+    LaharWindowState* state = lahar_window_state(window);
+    uint32_t color_count = 0;
+
+    VkRenderingInfo rendering_info = ZINIT;
+
+    VkRenderingAttachmentInfo* color_attachments = NULL;
+
+    LaharAttachmentConfig* depth_config = NULL;
+    LaharAttachmentConfig* stencil_config = NULL;
+
+    VkRenderingAttachmentInfo depth_attachment = ZINIT;
+    VkRenderingAttachmentInfo stencil_attachment = ZINIT;
+
+    VkRenderingAttachmentInfo* depth_attachment_ptr = NULL;
+    VkRenderingAttachmentInfo* stencil_attachment_ptr = NULL;
+
+    const uint32_t frame_index = state->frame_index;
+
+    if (!state) {
+        err = LAHAR_ERR_INVALID_WINDOW;
+        goto error;
+    }
+
+    if (state->frame_phase != LAHAR_FRAME_PHASE_DRAW) {
+        err = LAHAR_ERR_INVALID_FRAME_STATE;
+        goto error;
+    }
+
+    for (uint32_t i = 0; i < state->attachment_count; i++) {
+        if (
+            state->attachment_configs[i].role == LAHAR_ATTROLE_COLOR ||
+            state->attachment_configs[i].role == LAHAR_ATTROLE_USER
+        ) {
+            color_count++;
+        }
+    }
+
+    color_attachments = (VkRenderingAttachmentInfo*)lahar_temp_alloc(color_count * sizeof(*color_attachments));
+    color_count = 0;
+
+
+    for (uint32_t i = 0; i < state->attachment_count; i++) {
+        if (
+            state->attachment_configs[i].role == LAHAR_ATTROLE_COLOR ||
+            state->attachment_configs[i].role == LAHAR_ATTROLE_USER
+        ) {
+            VkRenderingAttachmentInfo* att = &color_attachments[color_count++];
+
+            att->sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            att->imageView = state->attachments[i][frame_index].view;
+            att->imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            att->resolveMode = VK_RESOLVE_MODE_NONE; // TODO: consider this
+            att->resolveImageView = VK_NULL_HANDLE; // TODO: consider this
+            att->resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED; // TODO: consider this
+            att->loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            att->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            att->clearValue = state->attachment_configs[i].clear_value;
+        }
+    }
+
+    depth_config = lahar_window_attachment_config_depth(window);
+    stencil_config = lahar_window_attachment_config_stencil(window);
+
+    if (depth_config) {
+        const LaharAttachment* windepth = lahar_window_attachment_depth(window, frame_index);
+        depth_attachment_ptr = &depth_attachment;
+
+        depth_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        depth_attachment.imageView = windepth->view;
+        depth_attachment.imageLayout = depth_config == stencil_config ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        depth_attachment.resolveMode = VK_RESOLVE_MODE_NONE;
+        depth_attachment.resolveImageView = VK_NULL_HANDLE;
+        depth_attachment.resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        depth_attachment.clearValue = depth_config->clear_value;
+    }
+
+    if (stencil_config == depth_config) {
+        stencil_attachment_ptr = depth_attachment_ptr;
+    }
+    else if (stencil_config) {
+        const LaharAttachment* winstencil = lahar_window_attachment_stencil(window, frame_index);
+        stencil_attachment_ptr = &stencil_attachment;
+
+        stencil_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        stencil_attachment.imageView = winstencil->view;
+        stencil_attachment.imageLayout = VK_IMAGE_LAYOUT_STENCIL_ATTACHMENT_OPTIMAL;
+        stencil_attachment.resolveMode = VK_RESOLVE_MODE_NONE;
+        stencil_attachment.resolveImageView = VK_NULL_HANDLE;
+        stencil_attachment.resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        stencil_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        stencil_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        stencil_attachment.clearValue = stencil_config->clear_value;
+    }
+
+    rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    rendering_info.pNext = NULL;
+    rendering_info.flags = 0;
+    rendering_info.renderArea.offset.x = 0;
+    rendering_info.renderArea.offset.y = 0;
+    rendering_info.renderArea.extent.width = state->width;
+    rendering_info.renderArea.extent.height = state->height;
+    rendering_info.layerCount = 1;
+    rendering_info.viewMask = 0;
+    rendering_info.colorAttachmentCount = color_count;
+    rendering_info.pColorAttachments = color_attachments;
+    rendering_info.pDepthAttachment = depth_attachment_ptr;
+    rendering_info.pStencilAttachment = stencil_attachment_ptr;
+
+    vkCmdBeginRendering(cmd, &rendering_info);
+error:
+    lahar_temp_mpop();
+    return err;
+}
+
+
+LaharAttachmentConfig* lahar_window_attachment_config_index(LaharWindow* window, uint32_t index) {
+    LaharWindowState* state = lahar_window_state(window);
+    if (!state) { return NULL; }
+    if (index >= state->attachment_count) { return NULL; }
+
+    return &state->attachment_configs[index];
+}
+
+LaharAttachmentConfig* lahar_window_attachment_config_color(LaharWindow* window) {
+    LaharWindowState* state = lahar_window_state(window);
+    if (!state) { return NULL; }
+
+    for (uint32_t i = 0; i < state->attachment_count; i++) {
+        if (state->attachment_configs[i].role == LAHAR_ATTROLE_COLOR) {
+            return &state->attachment_configs[i];
+        }
+    }
+
+    return NULL;
+}
+
+LaharAttachmentConfig* lahar_window_attachment_config_depth(LaharWindow* window) {
+    LaharWindowState* state = lahar_window_state(window);
+    if (!state) { return NULL; }
+
+    for (uint32_t i = 0; i < state->attachment_count; i++) {
+        if (
+            state->attachment_configs[i].role == LAHAR_ATTROLE_DEPTH ||
+            state->attachment_configs[i].role == LAHAR_ATTROLE_DEPTH_STENCIL
+        ) {
+            return &state->attachment_configs[i];
+        }
+    }
+
+    return NULL;
+}
+
+LaharAttachmentConfig* lahar_window_attachment_config_stencil(LaharWindow* window) {
+    LaharWindowState* state = lahar_window_state(window);
+    if (!state) { return NULL; }
+
+    for (uint32_t i = 0; i < state->attachment_count; i++) {
+        if (
+            state->attachment_configs[i].role == LAHAR_ATTROLE_STENCIL ||
+            state->attachment_configs[i].role == LAHAR_ATTROLE_DEPTH_STENCIL
+        ) {
+            return &state->attachment_configs[i];
+        }
+    }
+
+    return NULL;
+}
+
+LaharAttachment* lahar_window_attachment_index(LaharWindow* window, uint32_t index, uint32_t frameno) {
+    LaharWindowState* state = lahar_window_state(window);
+    if (!state) { return NULL; }
+    if (index >= state->attachment_count) { return NULL; }
+    if (frameno >= state->swap_size) { return NULL; }
+
+    return &state->attachments[index][frameno];
+}
+
+LaharAttachment* lahar_window_attachment_color(LaharWindow* window, uint32_t frameno) {
+    LaharWindowState* state = lahar_window_state(window);
+    if (!state) { return NULL; }
+
+    for (uint32_t i = 0; i < state->attachment_count; i++) {
+        if (state->attachment_configs[i].role == LAHAR_ATTROLE_COLOR) {
+            return &state->attachments[i][frameno];
+        }
+    }
+
+    return NULL;
+}
+
+LaharAttachment* lahar_window_attachment_depth(LaharWindow* window, uint32_t frameno) {
+    LaharWindowState* state = lahar_window_state(window);
+    if (!state) { return NULL; }
+
+    for (uint32_t i = 0; i < state->attachment_count; i++) {
+        if (
+            state->attachment_configs[i].role == LAHAR_ATTROLE_DEPTH ||
+            state->attachment_configs[i].role == LAHAR_ATTROLE_DEPTH_STENCIL
+        ) {
+            return &state->attachments[i][frameno];
+        }
+    }
+
+    return NULL;
+}
+
+LaharAttachment* lahar_window_attachment_stencil(LaharWindow* window, uint32_t frameno) {
+    LaharWindowState* state = lahar_window_state(window);
+    if (!state) { return NULL; }
+
+    for (uint32_t i = 0; i < state->attachment_count; i++) {
+        if (
+            state->attachment_configs[i].role == LAHAR_ATTROLE_STENCIL ||
+            state->attachment_configs[i].role == LAHAR_ATTROLE_DEPTH_STENCIL
+        ) {
+            return &state->attachments[i][frameno];
+        }
+    }
+
+    return NULL;
+}
+
+
+uint32_t lahar_shader_var_type_to_input_type(LaharShaderVarType svt, VkFormat* format_out) {
+    if (!format_out) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+    switch (svt) {
+        case LAHAR_SVT_BOOL:   *format_out = VK_FORMAT_R32_UINT;              break;
+        case LAHAR_SVT_INT:    *format_out = VK_FORMAT_R32_SINT;              break;
+        case LAHAR_SVT_UINT:   *format_out = VK_FORMAT_R32_UINT;              break;
+        case LAHAR_SVT_HALF:   *format_out = VK_FORMAT_R16_SFLOAT;            break;
+        case LAHAR_SVT_FLOAT:  *format_out = VK_FORMAT_R32_SFLOAT;            break;
+        case LAHAR_SVT_DOUBLE: *format_out = VK_FORMAT_R64_SFLOAT;            break;
+        case LAHAR_SVT_BVEC2:  *format_out = VK_FORMAT_R32G32_UINT;           break;
+        case LAHAR_SVT_BVEC3:  *format_out = VK_FORMAT_R32G32B32_UINT;        break;
+        case LAHAR_SVT_BVEC4:  *format_out = VK_FORMAT_R32G32B32A32_UINT;     break;
+        case LAHAR_SVT_IVEC2:  *format_out = VK_FORMAT_R32G32_SINT;           break;
+        case LAHAR_SVT_IVEC3:  *format_out = VK_FORMAT_R32G32B32_SINT;        break;
+        case LAHAR_SVT_IVEC4:  *format_out = VK_FORMAT_R32G32B32A32_SINT;     break;
+        case LAHAR_SVT_UVEC2:  *format_out = VK_FORMAT_R32G32_UINT;           break;
+        case LAHAR_SVT_UVEC3:  *format_out = VK_FORMAT_R32G32B32_UINT;        break;
+        case LAHAR_SVT_UVEC4:  *format_out = VK_FORMAT_R32G32B32A32_UINT;     break;
+        case LAHAR_SVT_VEC2:   *format_out = VK_FORMAT_R32G32_SFLOAT;         break;
+        case LAHAR_SVT_VEC3:   *format_out = VK_FORMAT_R32G32B32_SFLOAT;      break;
+        case LAHAR_SVT_VEC4:   *format_out = VK_FORMAT_R32G32B32A32_SFLOAT;   break;
+        case LAHAR_SVT_DVEC2:  *format_out = VK_FORMAT_R64G64_SFLOAT;         break;
+        case LAHAR_SVT_DVEC3:  *format_out = VK_FORMAT_R64G64B64_SFLOAT;      break;
+        case LAHAR_SVT_DVEC4:  *format_out = VK_FORMAT_R64G64B64A64_SFLOAT;   break;
+        default:               return LAHAR_ERR_INVALID_TYPE;
+    }
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+uint32_t __lahar_binding_info(const LaharShaderVarInfo* shader_vars, const LaharShaderVarInfo* var, VkDescriptorSetLayoutBinding* binding) {
+    uint32_t err = LAHAR_ERR_SUCCESS;
+
+    switch (var->storage_class) {
+        case LAHAR_SVSC_UNIFORM_BUFFER: {
+            binding->descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            binding->stageFlags = var->stages;
+            binding->descriptorCount = 1;
+        } break;
+        case LAHAR_SVSC_STORAGE_BUFFER: {
+            binding->descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            binding->stageFlags = var->stages;
+            binding->descriptorCount = 1;
+        } break;
+        case LAHAR_SVSC_UNIFORM_CONSTANT: {
+            binding->stageFlags = var->stages;
+
+            switch (var->type) {
+                case LAHAR_SVT_ARRAY: {
+                    LAHAR_ASSERT(var->child_vars_begin != UINT32_MAX);
+                    const LaharShaderVarInfo* child_var = &shader_vars[var->child_vars_begin];
+
+                    if ((err = __lahar_binding_info(shader_vars, child_var, binding))) {
+                        return err;
+                    }
+
+                    binding->descriptorCount = var->array_size;
+                } break;
+                case LAHAR_SVT_IMAGE: {
+                    binding->descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+                } break;
+                case LAHAR_SVT_SAMPLER: {
+                    binding->descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+                } break;
+                case LAHAR_SVT_SAMPLER_IMAGE: {
+                    binding->descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                } break;
+                default:
+                    lahar_error("Illegal type for uniform constant");
+                    return LAHAR_ERR_MALFORMED_CODE;
+            }
+        } break;
+        default:
+            lahar_error("Illegal storage class for binding");
+            return LAHAR_ERR_MALFORMED_CODE;
+    }
+
+    return err;
+}
+
+uint32_t __lahar_shader_set_binding_infos(uint32_t shader_var_count, LaharShaderVarInfo* shader_vars, uint32_t set_number, uint32_t* binding_count_out, VkDescriptorSetLayoutBinding* bindings_out) {
+    if (!shader_vars || !binding_count_out) {
+        return LAHAR_ERR_ILLEGAL_PARAMS;
+    }
+
+    uint32_t found_binding_count = 0;
+
+    for (uint32_t i = 0; i < shader_var_count; i++) {
+        const LaharShaderVarInfo* var = &shader_vars[i];
+
+        const bool is_uniform = 
+            var->storage_class == LAHAR_SVSC_UNIFORM_BUFFER ||
+            var->storage_class == LAHAR_SVSC_UNIFORM_CONSTANT ||
+            var->storage_class == LAHAR_SVSC_STORAGE_BUFFER;
+
+        const bool right_set = var->set == set_number;
+        const bool top_level = var->parent_var == UINT32_MAX;
+
+        if (is_uniform && right_set && top_level) {
+            found_binding_count++;
+        }
+    }
+
+    if (!bindings_out) {
+        *binding_count_out = found_binding_count;
+        return LAHAR_ERR_SUCCESS;
+    }
+
+    for (uint32_t binding_number = 0; binding_number < found_binding_count; binding_number++) {
+        const LaharShaderVarInfo* binding_var = NULL;
+
+        for (uint32_t i = 0; i < shader_var_count; i++) {
+            const LaharShaderVarInfo* var = &shader_vars[i];
+
+            const bool is_uniform = 
+                var->storage_class == LAHAR_SVSC_UNIFORM_BUFFER ||
+                var->storage_class == LAHAR_SVSC_UNIFORM_CONSTANT ||
+                var->storage_class == LAHAR_SVSC_STORAGE_BUFFER;
+
+            const bool right_set = var->set == set_number;
+            const bool top_level = var->parent_var == UINT32_MAX;
+
+            if (is_uniform && right_set && top_level && var->binding == binding_number) {
+                binding_var = var;
+                break;
+            }
+        }
+
+        memset(&bindings_out[binding_number], 0, sizeof(*bindings_out));
+
+        bindings_out[binding_number].binding = binding_number;
+
+        if (binding_var) {
+            __lahar_binding_info(shader_vars, binding_var, &bindings_out[binding_number]);
+        }
+    }
+
+    *binding_count_out = found_binding_count;
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+uint32_t __lahar_shader_create_layout(uint32_t shader_var_count, LaharShaderVarInfo* shader_vars, VkPipelineLayout* created) {
+    lahar_temp_mcheck();
+
+    uint32_t err = LAHAR_ERR_SUCCESS;
+    uint32_t max_set_number = UINT32_MAX;
+    uint32_t total_sets = 0;
+    uint32_t set_number = 0;
+    VkDescriptorSetLayoutBinding* set_bindings = NULL;
+    VkDescriptorSetLayout* set_layouts = NULL;
+    VkPushConstantRange push_constant = {};
+    bool has_push_constant = false;
+
+    VkPipelineLayoutCreateInfo layout_info = ZINIT;
+
+    for (uint32_t i = 0; i < shader_var_count; i++) {
+        const LaharShaderVarInfo* var = &shader_vars[i];
+
+        const bool is_uniform = 
+            var->storage_class == LAHAR_SVSC_UNIFORM_BUFFER ||
+            var->storage_class == LAHAR_SVSC_UNIFORM_CONSTANT ||
+            var->storage_class == LAHAR_SVSC_STORAGE_BUFFER;
+
+        if (is_uniform && var->parent_var == UINT32_MAX) {
+            if (max_set_number == UINT32_MAX) {
+                max_set_number = var->set;
+            }
+            else {
+                max_set_number = var->set > max_set_number ? var->set : max_set_number;
+            }
+        }
+    }
+
+    for (uint32_t i = 0; i < shader_var_count; i++) {
+        const LaharShaderVarInfo* var = &shader_vars[i];
+
+        if (var->storage_class == LAHAR_SVSC_PUSH_CONSTANT && var->parent_var == UINT32_MAX) {
+            has_push_constant = true;
+
+            push_constant.offset = var->offset;
+            push_constant.size = var->size;
+            push_constant.stageFlags = var->stages;
+
+            break;
+        }
+    }
+
+    if (max_set_number != UINT32_MAX) {
+        total_sets = max_set_number + 1;
+        set_layouts = (VkDescriptorSetLayout*)lahar_temp_alloc(total_sets * sizeof(*set_layouts));
+
+        for (; set_number <= max_set_number; set_number++) {
+            uint32_t binding_count = 0;
+
+            if ((err = __lahar_shader_set_binding_infos(shader_var_count, shader_vars, set_number, &binding_count, NULL))) {
+                goto error;
+            }
+
+            set_bindings = (VkDescriptorSetLayoutBinding*)lahar_temp_alloc(binding_count * sizeof(*set_bindings));
+
+            if ((err = __lahar_shader_set_binding_infos(shader_var_count, shader_vars, set_number, &binding_count, set_bindings))) {
+                goto error;
+            }
+
+            VkDescriptorSetLayoutCreateInfo create_info = {
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                .bindingCount = binding_count,
+                .pBindings = set_bindings
+            };
+
+            if ((lahar->vkresult = vkCreateDescriptorSetLayout(lahar->device, &create_info, lahar->vkalloc, &set_layouts[set_number])) != VK_SUCCESS) {
+                err = LAHAR_ERR_VK_ERR;
+                goto error;
+            }
+        }
+    }
+
+    layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layout_info.setLayoutCount = total_sets;
+    layout_info.pSetLayouts = set_layouts;
+    layout_info.pPushConstantRanges = &push_constant;
+    layout_info.pushConstantRangeCount = has_push_constant ? 1 : 0;
+
+    if ((lahar->vkresult = vkCreatePipelineLayout(lahar->device, &layout_info, lahar->vkalloc, created)) != VK_SUCCESS) {
+        err = LAHAR_ERR_VK_ERR;
+        goto error;
+    }
+
+error:
+    for (uint32_t i = 0; i < set_number; i++) {
+        vkDestroyDescriptorSetLayout(lahar->device, set_layouts[i], lahar->vkalloc);
+    }
+
+    lahar_temp_mpop();
+    return err;
+}
+
+uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, VkPipelineLayout* layout) {
+    if (!builder || ! pipeline || !layout) {
+        return LAHAR_ERR_ILLEGAL_PARAMS;
+    }
+
+    if (!builder->stage_count) {
+        return LAHAR_ERR_INVALID_CONFIGURATION;
+    }
+
+    lahar_temp_mcheck();
+
+    // Base vars
+    uint32_t err = LAHAR_ERR_SUCCESS;
+    VkResult result = VK_SUCCESS;
+    bool layout_created = false;
+
+    // Module/stage construction vars
+    VkShaderModuleCreateInfo module_infos[LAHAR_MAX_SHADER_STAGES] = ZINIT;
+    VkShaderModule modules[LAHAR_MAX_SHADER_STAGES] = ZINIT;
+    VkPipelineShaderStageCreateInfo stage_infos[LAHAR_MAX_SHADER_STAGES] = ZINIT;
+    const LaharShaderCompiler* stage_compilers[LAHAR_MAX_SHADER_STAGES] = ZINIT;
+    uint32_t* compiled_sources[LAHAR_MAX_SHADER_STAGES] = ZINIT;
+    size_t compiled_sizes[LAHAR_MAX_SHADER_STAGES] = ZINIT;
+    uint32_t stage_index = 0;
+    bool found_compiler = false;
+
+    // Dynamic state vars
+    uint32_t dynamic_state_count = 0;
+    VkDynamicState dynamic_states[64] = ZINIT;
+
+    size_t max_states = sizeof(dynamic_states) / sizeof(dynamic_states[0]);
+
+    bool is_vulkan_1_3 = lahar->vkversion >= VK_MAKE_VERSION(1, 3, 0);
+    bool has_dynamic_1 = lahar_extension_has_device(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
+    bool has_dynamic_2 = lahar_extension_has_device(VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME);
+    bool has_dynamic_3 = lahar_extension_has_device(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
+
+    // Pipeline construction vars
+    VkPipelineDynamicStateCreateInfo dynamic_state_info = ZINIT;
+    VkPipelineVertexInputStateCreateInfo vertex_input_info = ZINIT;
+    VkPipelineInputAssemblyStateCreateInfo input_assembly_info = ZINIT;
+    VkPipelineViewportStateCreateInfo viewport_info = ZINIT;
+    VkPipelineRasterizationStateCreateInfo rasterizer_info = ZINIT;
+    VkPipelineMultisampleStateCreateInfo multisampling_info = ZINIT;
+    VkPipelineColorBlendStateCreateInfo blend_state = ZINIT;
+    VkPipelineRenderingCreateInfo rendering_info = ZINIT;
+    VkPipelineLayout chosen_layout = VK_NULL_HANDLE;
+
+    const bool has_dynamic_rendering = lahar_extension_has_device(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+    const bool wants_dynamic_rendering = has_dynamic_rendering || builder->force_dynamic;
+
+    void* final_pnext_chain = builder->pNext;
+
+    VkGraphicsPipelineCreateInfo pipeline_info = ZINIT;
+    VkPipeline created_pipeline = VK_NULL_HANDLE;
+
+    // Introspection vars
+    uint32_t shader_var_count = 0;
+    LaharShaderVarInfo* shader_vars = NULL;
+
+    // Step 1: build stages/modules, handling compilation if needed
+    while (builder->stages[stage_index].code && stage_index < LAHAR_MAX_SHADER_STAGES) {
+        const LaharShaderStage* stage = &builder->stages[stage_index];
+
+        if (!stage->lang || strcmp(stage->lang, "spv") == 0 || strcmp(stage->lang, "spirv") == 0) {
+            module_infos[stage_index].sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+            module_infos[stage_index].codeSize = stage->length;
+            module_infos[stage_index].pCode = (const uint32_t*)stage->code;
+        }
+        else {
+            found_compiler = false;
+
+            for (size_t i = 0; i < LAHAR_MAX_SHADER_COMPILERS; i++) {
+                if (strcmp(stage->lang, lahar->shader_compilers[i].language) == 0) {
+                    stage_compilers[stage_index] = &lahar->shader_compilers[i];
+                    found_compiler = true;
+                    break;
+                }
+            }
+
+            if (!found_compiler) {
+                err = LAHAR_ERR_UNKNOWN_LANGUAGE;
+                goto error;
+            }
+
+            err = stage_compilers[stage_index]->compile(
+                stage_compilers[stage_index]->user_data,
+                stage,
+                &compiled_sources[stage_index],
+                &compiled_sizes[stage_index]
+            );
+
+            if (err) { goto error; }
+
+            module_infos[stage_index].sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+            module_infos[stage_index].codeSize = compiled_sizes[stage_index];
+            module_infos[stage_index].pCode = compiled_sources[stage_index];
+        }
+
+        result = vkCreateShaderModule(lahar->device, &module_infos[stage_index], lahar->vkalloc, &modules[stage_index]);
+        if (result != VK_SUCCESS) { err = LAHAR_ERR_VK_ERR; goto error; }
+
+        stage_infos[stage_index].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stage_infos[stage_index].stage = stage->stage;
+        stage_infos[stage_index].module = modules[stage_index];
+        stage_infos[stage_index].pName = stage->entrypoint ? stage->entrypoint : "main";
+
+        stage_index++;
+    } 
+
+    if (builder->all_dynamic) {
+        static const VkDynamicState base[] = {
+            VK_DYNAMIC_STATE_VIEWPORT,
+            VK_DYNAMIC_STATE_SCISSOR,
+            VK_DYNAMIC_STATE_LINE_WIDTH,
+            VK_DYNAMIC_STATE_DEPTH_BIAS,
+            VK_DYNAMIC_STATE_BLEND_CONSTANTS,
+            VK_DYNAMIC_STATE_DEPTH_BOUNDS,
+            VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK,
+            VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
+            VK_DYNAMIC_STATE_STENCIL_REFERENCE,
+        };
+
+        memcpy(dynamic_states, base, sizeof(base));
+        dynamic_state_count = sizeof(base) / sizeof(base[0]);
+
+        static const VkDynamicState dyn1[] = {
+            VK_DYNAMIC_STATE_CULL_MODE_EXT,
+            VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE_EXT,
+            VK_DYNAMIC_STATE_DEPTH_COMPARE_OP_EXT,
+            VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE_EXT,
+            VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE_EXT,
+            VK_DYNAMIC_STATE_FRONT_FACE_EXT,
+            VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY_EXT,
+            //VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT_EXT,
+            VK_DYNAMIC_STATE_STENCIL_OP_EXT,
+            VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE_EXT,
+            VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE_EXT,
+            //VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT_EXT,
+        };
+
+        static const VkDynamicState dyn2[] = {
+            VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE_EXT,
+            VK_DYNAMIC_STATE_LOGIC_OP_EXT,
+            VK_DYNAMIC_STATE_PATCH_CONTROL_POINTS_EXT,
+            VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE_EXT,
+        };
+
+        static const VkDynamicState dyn3[] = {
+            VK_DYNAMIC_STATE_ALPHA_TO_COVERAGE_ENABLE_EXT,
+            VK_DYNAMIC_STATE_ALPHA_TO_ONE_ENABLE_EXT,
+            VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT,
+            VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT,
+            VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT,
+            VK_DYNAMIC_STATE_DEPTH_CLAMP_ENABLE_EXT,
+            VK_DYNAMIC_STATE_LOGIC_OP_ENABLE_EXT,
+            VK_DYNAMIC_STATE_POLYGON_MODE_EXT,
+            VK_DYNAMIC_STATE_RASTERIZATION_SAMPLES_EXT,
+            VK_DYNAMIC_STATE_SAMPLE_MASK_EXT,
+        };
+
+        static const size_t dyn1_ct = sizeof(dyn1) / sizeof(dyn1[0]);
+        static const size_t dyn2_ct = sizeof(dyn2) / sizeof(dyn2[0]);
+        static const size_t dyn3_ct = sizeof(dyn3) / sizeof(dyn3[0]);
+
+        if (is_vulkan_1_3 || has_dynamic_1) {
+            for (size_t i = 0; dynamic_state_count < max_states && i < dyn1_ct; dynamic_state_count++, i++) {
+                dynamic_states[dynamic_state_count] = dyn1[i];
+            }
+        }
+
+        if (has_dynamic_2) {
+            for (size_t i = 0; dynamic_state_count < max_states && i < dyn2_ct; dynamic_state_count++, i++) {
+                dynamic_states[dynamic_state_count] = dyn2[i];
+            }
+        }
+
+        if (has_dynamic_3) {
+            for (size_t i = 0; dynamic_state_count < max_states && i < dyn3_ct; dynamic_state_count++, i++) {
+                dynamic_states[dynamic_state_count] = dyn3[i];
+            }
+        }
+    }
+    else {
+        if (builder->dynamic_mode == LAHAR_SDF_DEFAULT) {
+            builder->dynamic_mode = LAHAR_SDF_BASIC;
+        }
+
+        if (builder->dynamic_mode & LAHAR_SDF_BASIC) {
+            static const VkDynamicState ds[] = {
+                VK_DYNAMIC_STATE_VIEWPORT,
+                VK_DYNAMIC_STATE_SCISSOR,
+            };
+
+            memcpy(&dynamic_states[dynamic_state_count], ds, sizeof(ds));
+            dynamic_state_count += sizeof(ds) / sizeof(ds[0]);
+        }
+
+        if (builder->dynamic_mode & LAHAR_SDF_DEPTH_BIAS) {
+            static const VkDynamicState ds[] = {
+                VK_DYNAMIC_STATE_DEPTH_BIAS,
+            };
+
+            memcpy(&dynamic_states[dynamic_state_count], ds, sizeof(ds));
+            dynamic_state_count += sizeof(ds) / sizeof(ds[0]);
+        }
+
+        if (builder->dynamic_mode & LAHAR_SDF_BLEND_CONST) {
+            static const VkDynamicState ds[] = {
+                VK_DYNAMIC_STATE_BLEND_CONSTANTS,
+            };
+
+            memcpy(&dynamic_states[dynamic_state_count], ds, sizeof(ds));
+            dynamic_state_count += sizeof(ds) / sizeof(ds[0]);
+        }
+
+        if (builder->dynamic_mode & LAHAR_SDF_DEPTH_STENCIL) {
+            static const VkDynamicState ds[] = {
+                VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE,
+                VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
+                VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
+                VK_DYNAMIC_STATE_STENCIL_REFERENCE,
+                VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK,
+                VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
+            };
+
+            memcpy(&dynamic_states[dynamic_state_count], ds, sizeof(ds));
+            dynamic_state_count += sizeof(ds) / sizeof(ds[0]);
+        }
+
+        if (builder->dynamic_mode & LAHAR_SDF_CULL) {
+            if (!is_vulkan_1_3 && !has_dynamic_1) {
+                err = LAHAR_ERR_MISSING_EXTENSION;
+                goto error;
+            }
+
+            static const VkDynamicState ds[] = {
+                VK_DYNAMIC_STATE_CULL_MODE_EXT,
+                VK_DYNAMIC_STATE_FRONT_FACE_EXT,
+            };
+
+            memcpy(&dynamic_states[dynamic_state_count], ds, sizeof(ds));
+            dynamic_state_count += sizeof(ds) / sizeof(ds[0]);
+        }
+    }
+
+    dynamic_state_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamic_state_info.dynamicStateCount = dynamic_state_count;
+    dynamic_state_info.pDynamicStates = dynamic_states;
+
+
+    input_assembly_info.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    input_assembly_info.primitiveRestartEnable = VK_FALSE;
+    if (builder->topology == LAHAR_ST_DEFAULT) {
+        input_assembly_info.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    }
+    else {
+        int num = (int)builder->topology;
+        input_assembly_info.topology = (VkPrimitiveTopology)(num - 1);
+    }
+
+
+    viewport_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewport_info.viewportCount = 1;
+    viewport_info.scissorCount = 1;
+
+    VkCullModeFlags cull_mode;
+    VkFrontFace front_face;
+
+    switch (builder->cull_mode) {
+        case LAHAR_SCM_DEFAULT:
+        case LAHAR_SCM_BACK:
+            cull_mode = VK_CULL_MODE_BACK_BIT;
+            break;
+        case LAHAR_SCM_OFF:
+            cull_mode = VK_CULL_MODE_NONE;
+            break;
+        case LAHAR_SCM_FRONT:
+            cull_mode = VK_CULL_MODE_FRONT_BIT;
+            break;
+        default:
+            err = LAHAR_ERR_INVALID_CONFIGURATION;
+            goto error;
+    }
+
+    switch (builder->face_mode) {
+        case LAHAR_SFM_DEFAULT:
+        case LAHAR_SFM_FRONT_CCW:
+            front_face = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+            break;
+        case LAHAR_SFM_FRONT_CW:
+            front_face = VK_FRONT_FACE_CLOCKWISE;
+            break;
+        default:
+            err = LAHAR_ERR_INVALID_CONFIGURATION;
+            goto error;
+    }
+
+    rasterizer_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer_info.depthClampEnable = VK_FALSE;
+    rasterizer_info.rasterizerDiscardEnable = VK_FALSE;
+    rasterizer_info.polygonMode = builder->wireframe ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
+    rasterizer_info.cullMode = cull_mode;
+    rasterizer_info.frontFace = front_face;
+    rasterizer_info.lineWidth = 1.0f;
+
+    multisampling_info.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling_info.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    multisampling_info.sampleShadingEnable = VK_FALSE;
+
+    blend_state.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    blend_state.attachmentCount = builder->blend_state_count;
+    blend_state.pAttachments = builder->blend_states;
+
+    rendering_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    rendering_info.colorAttachmentCount = 1;
+    rendering_info.pColorAttachmentFormats = &builder->surface_color_format;
+    rendering_info.depthAttachmentFormat = builder->surface_depth_format;
+    rendering_info.stencilAttachmentFormat = builder->surface_stencil_format;
+
+    if (wants_dynamic_rendering && !__lahar_pnext_fetch(final_pnext_chain, VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO)) {
+        rendering_info.pNext = final_pnext_chain;
+        final_pnext_chain = &rendering_info;
+    }
+
+    if ((err = lahar_shader_introspect(builder->stages, builder->stage_count, &shader_var_count, NULL))) {
+        goto error;
+    }
+
+    shader_vars = (LaharShaderVarInfo*)lahar_temp_alloc(shader_var_count * sizeof(*shader_vars));
+
+    if ((err = lahar_shader_introspect(builder->stages, builder->stage_count, &shader_var_count, shader_vars))) {
+        goto error;
+    }
+
+    vertex_input_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+    vertex_input_info.vertexAttributeDescriptionCount = builder->attrib_count;
+    vertex_input_info.pVertexAttributeDescriptions = builder->attrib_descriptions;
+    vertex_input_info.vertexBindingDescriptionCount = builder->binding_count;
+    vertex_input_info.pVertexBindingDescriptions = builder->binding_descriptions;
+
+    if (!builder->skip_validation) {
+        for (uint32_t j = 0; j < shader_var_count; j++) {
+            const LaharShaderVarInfo* var = &shader_vars[j];
+            if (var->storage_class != LAHAR_SVSC_INPUT) { continue; }
+            
+            bool found = false;
+            for (uint32_t i = 0; i < builder->attrib_count; i++) {
+                if (builder->attrib_descriptions[i].location == var->location) {
+                    found = true;
+                    const VkFormat format = builder->attrib_descriptions[i].format;
+
+                    VkFormat expected;
+                    
+                    if ((err = lahar_shader_var_type_to_input_type(var->type, &expected))) {
+                        lahar_error("Location %" PRIu32 " has type Lahar doesn't support for vertex inputs", var->location);
+                        goto error;
+                    }
+                    
+                    if (expected != format) {
+                        lahar_error(
+                            "Location %" PRIu32 " expected format %s, got %s",
+                            var->location,
+                            lahar_vkformat_string(expected),
+                            lahar_vkformat_string(format)
+                        );
+                        err = LAHAR_ERR_INVALID_CONFIGURATION;
+                        goto error;
+                    }
+
+                    break;
+                }
+            }
+            
+            if (!found) {
+                lahar_error("Shader consumes input location %" PRIu32 " but config does not supply it", var->location);
+                err = LAHAR_ERR_INVALID_CONFIGURATION;
+                goto error;
+            }
+        }
+
+        for (uint32_t i = 0; i < builder->attrib_count; i++) {
+            const uint32_t location = builder->attrib_descriptions[i].location;
+            const VkFormat format = builder->attrib_descriptions[i].format;
+            bool found = false;
+
+            for (uint32_t j = 0; j < shader_var_count; j++) {
+                const LaharShaderVarInfo* var = &shader_vars[j];
+
+                if (var->storage_class == LAHAR_SVSC_INPUT && var->location == location) {
+                    found = true;
+
+                    VkFormat expected;
+                    
+                    if ((err = lahar_shader_var_type_to_input_type(var->type, &expected))) {
+                        lahar_error("Location %" PRIu32 " has type Lahar doesn't support for vertex inputs", location);
+                        goto error;
+                    }
+                    
+                    if (expected != format) {
+                        lahar_error(
+                            "Location %" PRIu32 " expected format %s, got %s",
+                            location,
+                            lahar_vkformat_string(expected),
+                            lahar_vkformat_string(format)
+                        );
+                        err = LAHAR_ERR_INVALID_CONFIGURATION;
+                        goto error;
+                    }
+                }
+            }
+
+            if (!found) {
+                lahar_error("Shader consumes input location %" PRIu32 " but config does not supply it", location);
+                err = LAHAR_ERR_INVALID_CONFIGURATION;
+                goto error;
+            }
+        }
+    }
+
+    if (builder->layout) {
+        chosen_layout = builder->layout;
+    }
+    else {
+        if ((err = __lahar_shader_create_layout(shader_var_count, shader_vars, &chosen_layout))) {
+            goto error;
+        }
+
+        layout_created = true;
+    }
+    
+
+    pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipeline_info.pNext = final_pnext_chain;
+    pipeline_info.flags = builder->flags;
+    pipeline_info.stageCount = stage_index;
+    pipeline_info.pStages = stage_infos;
+    pipeline_info.pVertexInputState = builder->pVertexInputState ? builder->pVertexInputState : &vertex_input_info;
+    pipeline_info.pInputAssemblyState = builder->pInputAssemblyState ? builder->pInputAssemblyState : &input_assembly_info;
+    pipeline_info.pViewportState = builder->pViewportState ? builder->pViewportState : &viewport_info;
+    pipeline_info.pRasterizationState = builder->pRasterizationState ? builder->pRasterizationState : &rasterizer_info;
+    pipeline_info.pMultisampleState = builder->pMultisampleState ? builder->pMultisampleState : &multisampling_info;
+    pipeline_info.pColorBlendState = builder->pColorBlendState ? builder->pColorBlendState : &blend_state;
+    pipeline_info.pDynamicState = builder->pDynamicState ? builder->pDynamicState : &dynamic_state_info;
+    pipeline_info.layout = chosen_layout;
+    pipeline_info.renderPass = builder->renderPass;
+    pipeline_info.subpass = builder->use_subpass_value ? builder->subpass : 0;
+
+    result = vkCreateGraphicsPipelines(lahar->device, VK_NULL_HANDLE, 1, &pipeline_info, lahar->vkalloc, &created_pipeline);
+    if (result != VK_SUCCESS) {
+        err = LAHAR_ERR_VK_ERR;
+        goto error;
+    }
+
+error:
+    for (size_t i = 0; i < stage_index; i++) {
+        if (stage_compilers[i] && compiled_sources[i]) {
+            stage_compilers[i]->release(
+                stage_compilers[i]->user_data,
+                compiled_sources[i],
+                compiled_sizes[i]
+            );
+        }
+
+        if (modules[i] != VK_NULL_HANDLE) {
+            vkDestroyShaderModule(lahar->device, modules[i], lahar->vkalloc);
+        }
+    }
+
+    if (err) {
+        lahar->vkresult = result;
+        if (pipeline) { *pipeline = VK_NULL_HANDLE; }
+        if (layout) { *layout = VK_NULL_HANDLE; }
+    }
+    else {
+        if (pipeline) { *pipeline = created_pipeline; }
+        if (layout) {
+            if (layout_created) { *layout = chosen_layout; }
+            else { *layout = VK_NULL_HANDLE; }
+        }
+    }
+
+    lahar_temp_mpop();
+    return err;
+}
+
+void lahar_shader_builder_set_stages(LaharShaderBuilder* builder, LaharShaderStage* stages, uint32_t stage_count) {
+    const uint32_t max = sizeof(builder->stages) / sizeof(builder->stages[0]);
+    const uint32_t to_copy = stage_count > max ? max : stage_count;
+
+    if (stages) {
+        memcpy(builder->stages, stages, to_copy * sizeof(*stages));
+    }
+
+    builder->stage_count = stage_count;
+}
+
+void lahar_shader_builder_add_stage(LaharShaderBuilder* builder, LaharShaderStage* stage) {
+    const uint32_t max = sizeof(builder->stages) / sizeof(builder->stages[0]);
+
+    if (builder->stage_count < max) {
+        memcpy(&builder->stages[builder->stage_count++], stage, sizeof(*stage));
+    }
+}
+
+void lahar_shader_builder_set_window(LaharShaderBuilder* builder, LaharWindow* window) {
+    const LaharWindowState* state = lahar_window_state(window);
+    builder->surface_color_format = state->surface_format.format;
+
+    const LaharAttachmentConfig* depth = lahar_window_attachment_config_depth(window);
+    const LaharAttachmentConfig* stencil = lahar_window_attachment_config_stencil(window);
+
+    builder->surface_depth_format = depth ? depth->img_info.format : VK_FORMAT_UNDEFINED;
+    builder->surface_stencil_format = stencil ? stencil->img_info.format : VK_FORMAT_UNDEFINED;
+
+    builder->blend_state_count = state->attachment_count;
+    memset(builder->blend_states, 0, sizeof(builder->blend_states));
+
+    for (uint32_t i = 0; i < builder->blend_state_count; i++) {
+        builder->blend_states[i].colorWriteMask = 
+            VK_COLOR_COMPONENT_R_BIT
+            | VK_COLOR_COMPONENT_G_BIT
+            | VK_COLOR_COMPONENT_B_BIT
+            | VK_COLOR_COMPONENT_A_BIT;
+    }
+}
+
+void lahar_shader_builder_set_formats(LaharShaderBuilder* builder, VkFormat color, VkFormat depth, VkFormat stencil) {
+    builder->surface_color_format = color;
+    builder->surface_depth_format = depth;
+    builder->surface_stencil_format = stencil;
+}
+
+void lahar_shader_builder_set_blend_states(LaharShaderBuilder* builder, VkPipelineColorBlendAttachmentState* states, uint32_t state_count) {
+    const uint64_t max = sizeof(builder->blend_states) / sizeof(builder->blend_states[0]);
+    builder->blend_state_count = state_count > max ? max : state_count;
+    memcpy(builder->blend_states, states, builder->blend_state_count * sizeof(*builder->blend_states));
+}
+
+void lahar_shader_builder_set_vertex_input(
+    LaharShaderBuilder* builder,
+    VkVertexInputAttributeDescription* attribs,
+    VkVertexInputBindingDescription* bindings,
+    uint32_t attrib_count,
+    uint32_t binding_count
+) {
+    builder->attrib_descriptions = attribs;
+    builder->binding_descriptions = bindings;
+    builder->attrib_count = attrib_count;
+    builder->binding_count = binding_count;
+}
+
+void lahar_shader_builder_set_blend_mode(LaharShaderBuilder* builder, LaharShaderBlendMode blend) {
+    if (blend == LAHAR_SBM_OPAQUE) {
+        for (uint32_t i = 0; i < sizeof(builder->blend_states) / sizeof(builder->blend_states[0]); i++) {
+            builder->blend_states[i].blendEnable = VK_FALSE;
+        }
+    }
+    else {
+        LAHAR_ASSERT(false && "Not yet implemented");
+    }
+}
+
+void lahar_shader_builder_set_topology(LaharShaderBuilder* builder, LaharShaderTopology topology) {
+    builder->topology = topology;
+}
+
+void lahar_shader_builder_set_depth_test(LaharShaderBuilder* builder, LaharShaderDepthTestMode depth_test) {
+    builder->depth_test = depth_test;
+}
+
+void lahar_shader_builder_set_depth_write(LaharShaderBuilder* builder, LaharShaderDepthWriteMode depth_write) {
+    builder->depth_write = depth_write;
+}
+
+void lahar_shader_builder_set_depth_compare_op(LaharShaderBuilder* builder, LaharShaderDepthCompareOp depth_compare_op) {
+    builder->depth_compare_op = depth_compare_op;
+}
+
+void lahar_shader_builder_set_cull_mode(LaharShaderBuilder* builder, LaharShaderCullMode cull_mode) {
+    builder->cull_mode = cull_mode;
+}
+
+void lahar_shader_builder_set_face_mode(LaharShaderBuilder* builder, LaharShaderFaceMode face_mode) {
+    builder->face_mode = face_mode;
+}
+
+void lahar_shader_builder_set_dynamic_flags(LaharShaderBuilder* builder, LaharShaderDynamicFlags dynamic_mode) {
+    builder->dynamic_mode = dynamic_mode;
+}
+
+void lahar_shader_builder_enable_all_dynamic(LaharShaderBuilder* builder, bool all_dynamic) {
+    builder->all_dynamic = all_dynamic;
+}
+
+void lahar_shader_builder_set_wireframe(LaharShaderBuilder* builder, bool wireframe) {
+    builder->wireframe = wireframe;
+}
+
+void lahar_shader_builder_skip_validation(LaharShaderBuilder* builder, bool skip_validation) {
+    builder->skip_validation = skip_validation;
+}
+
+void lahar_shader_builder_set_pnext(LaharShaderBuilder* builder, void* pNext) {
+    builder->pNext = pNext;
+}
+
+void lahar_shader_builder_set_flags(LaharShaderBuilder* builder, VkPipelineCreateFlags flags) {
+    builder->flags = flags;
+}
+
+void lahar_shader_builder_set_vertex_input_state(LaharShaderBuilder* builder, const VkPipelineVertexInputStateCreateInfo* pVertexInputState) {
+    builder->pVertexInputState = pVertexInputState;
+}
+
+void lahar_shader_builder_set_input_assembly_state(LaharShaderBuilder* builder, const VkPipelineInputAssemblyStateCreateInfo* pInputAssemblyState) {
+    builder->pInputAssemblyState = pInputAssemblyState;
+}
+
+void lahar_shader_builder_set_tessellation_state(LaharShaderBuilder* builder, const VkPipelineTessellationStateCreateInfo* pTessellationState) {
+    builder->pTessellationState = pTessellationState;
+}
+
+void lahar_shader_builder_set_viewport_state(LaharShaderBuilder* builder, const VkPipelineViewportStateCreateInfo* pViewportState) {
+    builder->pViewportState = pViewportState;
+}
+
+void lahar_shader_builder_set_rasterization_state(LaharShaderBuilder* builder, const VkPipelineRasterizationStateCreateInfo* pRasterizationState) {
+    builder->pRasterizationState = pRasterizationState;
+}
+
+void lahar_shader_builder_set_multisample_state(LaharShaderBuilder* builder, const VkPipelineMultisampleStateCreateInfo* pMultisampleState) {
+    builder->pMultisampleState = pMultisampleState;
+}
+
+void lahar_shader_builder_set_depth_stencil_state(LaharShaderBuilder* builder, const VkPipelineDepthStencilStateCreateInfo* pDepthStencilState) {
+    builder->pDepthStencilState = pDepthStencilState;
+}
+
+void lahar_shader_builder_set_color_blend_state(LaharShaderBuilder* builder, const VkPipelineColorBlendStateCreateInfo* pColorBlendState) {
+    builder->pColorBlendState = pColorBlendState;
+}
+
+void lahar_shader_builder_set_dynamic_state(LaharShaderBuilder* builder, const VkPipelineDynamicStateCreateInfo* pDynamicState) {
+    builder->pDynamicState = pDynamicState;
+}
+
+void lahar_shader_builder_set_layout(LaharShaderBuilder* builder, VkPipelineLayout layout) {
+    builder->layout = layout;
+}
+
+void lahar_shader_builder_set_render_pass(LaharShaderBuilder* builder, VkRenderPass renderPass) {
+    builder->renderPass = renderPass;
+}
+
+void lahar_shader_builder_set_subpass(LaharShaderBuilder* builder, uint32_t subpass) {
+    builder->subpass = subpass;
+    builder->use_subpass_value = true;
+}
 
 
 
@@ -4185,6 +5960,2559 @@ uint32_t lahar_window_wait_inactive(LaharWindow* window) {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+struct LaharSPVTypeInfo;
+typedef struct LaharSPVTypeInfo LaharSPVTypeInfo;
+
+struct LaharSPVDescriptorSize;
+typedef struct LaharSPVDescriptorSize LaharSPVDescriptorSize;
+
+struct LaharSPVInfo;
+typedef struct LaharSPVInfo LaharSPVInfo;
+
+struct LaharSPVInfo {
+    const LaharShaderStage* stage;
+    LaharSPVTypeInfo* type_table;
+    uint32_t type_count;
+
+    struct {
+        uint32_t capabilities;
+        uint32_t extensions;
+        uint32_t mode_setting;
+        uint32_t debug;
+        uint32_t annotations;
+        uint32_t types;
+        uint32_t functions;
+    } section_offsets;
+};
+
+#define LAHAR_MIN(a, b) a < b ? a : b
+
+// Note that the byte sizes of the types is a best estimate based on logical type,
+// and in reality is determined by use context, such as struct padding
+typedef struct LaharSPVMemberInfo {
+    char* name;
+    uint32_t id;
+    uint32_t offset;
+    uint32_t matrix_stride; 
+} LaharSPVMemberInfo;
+
+struct LaharSPVTypeInfo {
+    uint32_t id;
+    uint32_t size_bytes;
+    uint32_t size_components;
+    uint32_t component_type;
+    //uint32_t offset_bytes;
+    uint32_t array_stride;
+    LaharShaderVarType type;
+    bool is_signed;
+    LaharSPVMemberInfo* members;
+    uint32_t tree_size;
+}; 
+
+struct LaharSPVDescriptorSize {
+    uint32_t set;
+    uint32_t binding;
+    uint32_t tree_size;
+};
+
+#define LAHAR_SPV_DECORATION_BLOCK 2
+#define LAHAR_SPV_DECORATION_BUFFERBLOCK 3
+#define LAHAR_SPV_DECORATION_ROW_MAJOR 4
+#define LAHAR_SPV_DECORATION_COL_MAJOR 4
+#define LAHAR_SPV_DECORATION_ARRAY_STRIDE 6     // followed by a literal bytes
+#define LAHAR_SPV_DECORATION_MATRIX_STRIDE 7    // followed by a literal bytes
+#define LAHAR_SPV_DECORATION_BUILTIN 11
+#define LAHAR_SPV_DECORATION_LOCATION 30        // folowed by a location enum
+#define LAHAR_SPV_DECORATION_BINDING 33         // followed by the biding number
+#define LAHAR_SPV_DECORATION_DESCRIPTOR_SET 34  // Followed by the set number
+#define LAHAR_SPV_DECORATION_OFFSET 35          // followed by the byte offset number
+
+
+
+#define LAHAR_SPV_OP_VARIABLE 59
+
+#define LAHAR_SPV_STORAGE_CLASS_UNIFORM_CONSTANT 0
+#define LAHAR_SPV_STORAGE_CLASS_INPUT 1
+#define LAHAR_SPV_STORAGE_CLASS_UNIFORM 2
+#define LAHAR_SPV_STORAGE_CLASS_PUSH_CONSTANT 9
+#define LAHAR_SPV_STORAGE_CLASS_STORAGE_BUFFER 12
+
+
+// Opcodes
+
+// Debug opcodes
+#define LAHAR_SPV_OP_SOURCE_CONTINUED 2
+#define LAHAR_SPV_OP_SOURCE 3
+#define LAHAR_SPV_OP_SOURCE_EXTENSION 4
+#define LAHAR_SPV_OP_NAME 5
+#define LAHAR_SPV_OP_MEMBER_NAME 6
+#define LAHAR_SPV_OP_STRING 7
+#define LAHAR_SPV_OP_LINE 8
+#define LAHAR_SPV_OP_NO_LINE 317
+#define LAHAR_SPV_OP_MODULE_PROCESSED 330
+
+bool __lahar_spv_op_is_debug(uint16_t opcode) {
+    switch (opcode) {
+        case LAHAR_SPV_OP_SOURCE_CONTINUED: 
+        case LAHAR_SPV_OP_SOURCE: 
+        case LAHAR_SPV_OP_SOURCE_EXTENSION: 
+        case LAHAR_SPV_OP_NAME: 
+        case LAHAR_SPV_OP_MEMBER_NAME: 
+        case LAHAR_SPV_OP_STRING: 
+        case LAHAR_SPV_OP_LINE: 
+        case LAHAR_SPV_OP_NO_LINE: 
+        case LAHAR_SPV_OP_MODULE_PROCESSED: 
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Annotation instructions
+#define LAHAR_SPV_OP_DECORATE 71
+#define LAHAR_SPV_OP_MEMBER_DECORATE 72
+#define LAHAR_SPV_OP_DECORATION_GROUP 73
+#define LAHAR_SPV_OP_GROUP_DECORATE 74
+#define LAHAR_SPV_OP_GROUP_MEMBER_DECORATE 75
+#define LAHAR_SPV_OP_DECORATE_ID 332
+#define LAHAR_SPV_OP_DECORATE_STRING 5632
+#define LAHAR_SPV_OP_MEMBER_DECORATE_STRING 5633
+
+bool __lahar_spv_op_is_annotation(uint16_t opcode) {
+    switch (opcode) {
+        case LAHAR_SPV_OP_DECORATE: 
+        case LAHAR_SPV_OP_MEMBER_DECORATE: 
+        case LAHAR_SPV_OP_DECORATION_GROUP: 
+        case LAHAR_SPV_OP_GROUP_DECORATE: 
+        case LAHAR_SPV_OP_GROUP_MEMBER_DECORATE: 
+        case LAHAR_SPV_OP_DECORATE_ID: 
+        case LAHAR_SPV_OP_DECORATE_STRING: 
+        case LAHAR_SPV_OP_MEMBER_DECORATE_STRING: 
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Extension instructions
+#define LAHAR_SPV_OP_EXTENSION 10
+#define LAHAR_SPV_OP_EXT_INST_IMPORT 11
+#define LAHAR_SPV_OP_EXT_INST 12
+#define LAHAR_SPV_OP_EXT_INST_WITH_FORWARD_REFS_KHR 4433
+#define LAHAR_SPV_OP_CONDITIONAL_EXTENSION_INTEL 6248
+
+bool __lahar_spv_op_is_extension(uint16_t opcode) {
+    switch (opcode) {
+        case LAHAR_SPV_OP_EXTENSION: 
+        case LAHAR_SPV_OP_EXT_INST_IMPORT: 
+        case LAHAR_SPV_OP_EXT_INST: 
+        case LAHAR_SPV_OP_EXT_INST_WITH_FORWARD_REFS_KHR: 
+        case LAHAR_SPV_OP_CONDITIONAL_EXTENSION_INTEL: 
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Mode setting instructions
+
+#define LAHAR_SPV_OP_MEMORY_MODEL 14
+#define LAHAR_SPV_OP_ENTRY_POINT 15
+#define LAHAR_SPV_OP_EXECUTION_MODE 16
+#define LAHAR_SPV_OP_CAPABILITY 17
+#define LAHAR_SPV_OP_EXECUTION_MODE_ID 331
+#define LAHAR_SPV_OP_CONDITIONAL_ENTRY_POINT_INTEL 6249
+#define LAHAR_SPV_OP_CONDITIONAL_CAPABILITY 6250
+
+bool __lahar_spv_op_is_mode_setting(uint16_t opcode) {
+    switch (opcode) {
+        case LAHAR_SPV_OP_MEMORY_MODEL: 
+        case LAHAR_SPV_OP_ENTRY_POINT: 
+        case LAHAR_SPV_OP_EXECUTION_MODE: 
+        case LAHAR_SPV_OP_CAPABILITY: 
+        case LAHAR_SPV_OP_EXECUTION_MODE_ID: 
+        case LAHAR_SPV_OP_CONDITIONAL_ENTRY_POINT_INTEL: 
+        case LAHAR_SPV_OP_CONDITIONAL_CAPABILITY: 
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Type opcodes
+#define LAHAR_SPV_OP_TYPE_VOID 19
+#define LAHAR_SPV_OP_TYPE_BOOL 20
+#define LAHAR_SPV_OP_TYPE_INT 21
+#define LAHAR_SPV_OP_TYPE_FLOAT 22
+#define LAHAR_SPV_OP_TYPE_VECTOR 23
+#define LAHAR_SPV_OP_TYPE_MATRIX 24
+#define LAHAR_SPV_OP_TYPE_IMAGE 25
+#define LAHAR_SPV_OP_TYPE_SAMPLER 26
+#define LAHAR_SPV_OP_TYPE_SAMPLED_IMAGE 27
+#define LAHAR_SPV_OP_TYPE_ARRAY 28
+#define LAHAR_SPV_OP_TYPE_RUNTIME_ARRAY 29
+#define LAHAR_SPV_OP_TYPE_STRUCT 30
+#define LAHAR_SPV_OP_TYPE_OPAQUE 31
+#define LAHAR_SPV_OP_TYPE_POINTER 32
+#define LAHAR_SPV_OP_TYPE_FUNCTION 33
+#define LAHAR_SPV_OP_TYPE_EVENT 34
+#define LAHAR_SPV_OP_TYPE_DEVICE_EVENT 35
+#define LAHAR_SPV_OP_TYPE_RESERVE_ID 36
+#define LAHAR_SPV_OP_TYPE_QUEUE 37
+#define LAHAR_SPV_OP_TYPE_PIPE 38
+#define LAHAR_SPV_OP_TYPE_FORWARD_POINTER 39
+#define LAHAR_SPV_OP_TYPE_PIPE_STORAGE 322
+#define LAHAR_SPV_OP_TYPE_NAMED_BARRIER 327
+#define LAHAR_SPV_OP_TYPE_TENSOR_ARM 4163
+#define LAHAR_SPV_OP_TYPE_GRAPH_ARM 4190
+#define LAHAR_SPV_OP_TYPE_UNTYPED_POINTER_KHR 4417
+#define LAHAR_SPV_OP_TYPE_COOPERATIVE_MATRIX_KHR 4456
+#define LAHAR_SPV_OP_TYPE_RAY_QUERY_KHR 4472
+#define LAHAR_SPV_OP_TYPE_HIT_OBJECT_NV 5281
+#define LAHAR_SPV_OP_TYPE_COOPERATIVE_VECTOR_NV 5288
+#define LAHAR_SPV_OP_TYPE_ACCELERATION_STRUCTURE_KHR 5341
+#define LAHAR_SPV_OP_TYPE_COOPERATIVE_MATRIX_NV 5358
+#define LAHAR_SPV_OP_TYPE_TENSOR_LAYOUT_NV 5370
+#define LAHAR_SPV_OP_TYPE_TENSOR_VIEW_NV 5371
+#define LAHAR_SPV_OP_TYPE_BUFFER_SURFACE_INTEL 6086
+#define LAHAR_SPV_OP_TYPE_STRUCT_CONTINUED 6090
+#define LAHAR_SPV_OP_TYPE_TASK_SEQUENCE_INTEL 6199
+
+bool __lahar_spv_op_is_type_declaration(uint16_t opcode) {
+    switch (opcode) {
+        case LAHAR_SPV_OP_TYPE_VOID: 
+        case LAHAR_SPV_OP_TYPE_BOOL: 
+        case LAHAR_SPV_OP_TYPE_INT: 
+        case LAHAR_SPV_OP_TYPE_FLOAT: 
+        case LAHAR_SPV_OP_TYPE_VECTOR: 
+        case LAHAR_SPV_OP_TYPE_MATRIX: 
+        case LAHAR_SPV_OP_TYPE_IMAGE: 
+        case LAHAR_SPV_OP_TYPE_SAMPLER: 
+        case LAHAR_SPV_OP_TYPE_SAMPLED_IMAGE: 
+        case LAHAR_SPV_OP_TYPE_ARRAY: 
+        case LAHAR_SPV_OP_TYPE_RUNTIME_ARRAY: 
+        case LAHAR_SPV_OP_TYPE_STRUCT: 
+        case LAHAR_SPV_OP_TYPE_OPAQUE: 
+        case LAHAR_SPV_OP_TYPE_POINTER: 
+        case LAHAR_SPV_OP_TYPE_FUNCTION: 
+        case LAHAR_SPV_OP_TYPE_EVENT: 
+        case LAHAR_SPV_OP_TYPE_DEVICE_EVENT: 
+        case LAHAR_SPV_OP_TYPE_RESERVE_ID: 
+        case LAHAR_SPV_OP_TYPE_QUEUE: 
+        case LAHAR_SPV_OP_TYPE_PIPE: 
+        case LAHAR_SPV_OP_TYPE_FORWARD_POINTER: 
+        case LAHAR_SPV_OP_TYPE_PIPE_STORAGE: 
+        case LAHAR_SPV_OP_TYPE_NAMED_BARRIER: 
+        case LAHAR_SPV_OP_TYPE_TENSOR_ARM: 
+        case LAHAR_SPV_OP_TYPE_GRAPH_ARM: 
+        case LAHAR_SPV_OP_TYPE_UNTYPED_POINTER_KHR: 
+        case LAHAR_SPV_OP_TYPE_COOPERATIVE_MATRIX_KHR: 
+        case LAHAR_SPV_OP_TYPE_RAY_QUERY_KHR: 
+        case LAHAR_SPV_OP_TYPE_HIT_OBJECT_NV: 
+        case LAHAR_SPV_OP_TYPE_COOPERATIVE_VECTOR_NV: 
+        case LAHAR_SPV_OP_TYPE_ACCELERATION_STRUCTURE_KHR: 
+        case LAHAR_SPV_OP_TYPE_COOPERATIVE_MATRIX_NV: 
+        case LAHAR_SPV_OP_TYPE_TENSOR_LAYOUT_NV: 
+        case LAHAR_SPV_OP_TYPE_TENSOR_VIEW_NV: 
+        case LAHAR_SPV_OP_TYPE_BUFFER_SURFACE_INTEL: 
+        case LAHAR_SPV_OP_TYPE_STRUCT_CONTINUED: 
+        case LAHAR_SPV_OP_TYPE_TASK_SEQUENCE_INTEL: 
+            return true;
+        default:
+            return false;
+    }
+}
+
+#define LAHAR_SPV_OP_CONSTANT 43
+#define LAHAR_SPV_OP_SPEC_CONSTANT 50
+
+#define LAHAR_SPV_OP_FUNCTION 54
+#define LAHAR_SPV_OP_FUNCTION_PARAMATER 55
+#define LAHAR_SPV_OP_FUNCTION_END 56
+#define LAHAR_SPV_OP_FUNCTION_CALL 57
+
+#define LAHAR_SPV_OP_VARIABLE 59
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// Lookup util functions. In this context, a lookup function is one that
+// takes a module, some id or short list of ids, and returns a simple piece
+// of data about that id, usually with a simple linear scan of a section
+
+bool __lahar_spv_v1_var_lookup_is_builtin(const LaharSPVInfo* info, uint32_t var_id) {
+    LAHAR_ASSERT(info);
+
+    const uint32_t* code = (const uint32_t*)info->stage->code;
+
+    for (uint64_t i = info->section_offsets.annotations; i < info->section_offsets.types;) {
+        const uint32_t word = code[i];
+        const uint16_t opcode = word & 0xFFFF;
+        const uint16_t word_count = word >> 16;
+
+        if (opcode == LAHAR_SPV_OP_DECORATE) {
+            const uint32_t decorated_target = code[i + 1];
+            const uint32_t decoration_type = code[i + 2];
+
+            // not the target we're looking for
+            if (decorated_target != var_id) { i += word_count; continue; }
+
+            if (decoration_type == LAHAR_SPV_DECORATION_BUILTIN) {
+                return true;
+            }
+        }
+
+        i += word_count;
+    }
+
+    return false;
+}
+
+bool __lahar_spv_v1_lookup_is_bufferblock(const LaharSPVInfo* info, uint32_t type_id) {
+    LAHAR_ASSERT(info);
+
+    const uint32_t* code = (const uint32_t*)info->stage->code;
+
+    for (uint64_t i = info->section_offsets.annotations; i < info->section_offsets.types;) {
+        const uint32_t word = code[i];
+        const uint16_t opcode = word & 0xFFFF;
+        const uint16_t word_count = word >> 16;
+
+        if (opcode == LAHAR_SPV_OP_DECORATE) {
+            const uint32_t decorated_target = code[i + 1];
+            const uint32_t decoration_type = code[i + 2];
+
+            // not the target we're looking for
+            if (decorated_target != type_id) { i += word_count; continue; }
+
+            if (decoration_type == LAHAR_SPV_DECORATION_BUFFERBLOCK) {
+                return true;
+            }
+        }
+
+        i += word_count;
+    }
+
+    return false;
+}
+
+uint32_t __lahar_spv_v1_lookup_input_location(const LaharSPVInfo* info, uint32_t input_id, uint32_t* location) {
+    LAHAR_ASSERT(info && location);
+
+    const uint32_t* code = (const uint32_t*)info->stage->code;
+
+    LAHAR_ASSERT(info->section_offsets.annotations != UINT32_MAX);
+
+    for (uint64_t i = info->section_offsets.annotations; i < info->section_offsets.types;) {
+        const uint32_t word = code[i];
+        const uint16_t opcode = word & 0xFFFF;
+        const uint16_t word_count = word >> 16;
+
+        if (opcode == LAHAR_SPV_OP_DECORATE) {
+            const uint32_t target = code[i + 1];
+            const uint32_t deco_type = code[i + 2];
+
+            if (
+                target != input_id ||
+                deco_type != LAHAR_SPV_DECORATION_LOCATION
+            ) { 
+                i += word_count; continue;
+            }
+
+            *location = code[i + 3];
+            return LAHAR_ERR_SUCCESS;
+        }
+
+        i += word_count;
+    }
+
+    return LAHAR_ERR_ID_NOT_FOUND;
+}
+
+uint32_t __lahar_spv_v1_lookup_type_array_stride(const LaharSPVInfo* info, uint32_t type_id, uint32_t* stride_out) {
+    LAHAR_ASSERT(info && stride_out);
+
+    const uint32_t* code = (const uint32_t*)info->stage->code;
+
+    for (uint64_t i = info->section_offsets.annotations; i < info->section_offsets.types;) {
+        const uint32_t word = code[i];
+        const uint16_t opcode = word & 0xFFFF;
+        const uint16_t word_count = word >> 16;
+
+        if (opcode == LAHAR_SPV_OP_DECORATE) {
+            const uint32_t target = code[i + 1];
+            const uint32_t deco_type = code[i + 2];
+
+            if (deco_type == LAHAR_SPV_DECORATION_ARRAY_STRIDE && target == type_id) {
+                *stride_out = code[i + 3];
+                return LAHAR_ERR_SUCCESS;
+            }
+        }
+
+        i += word_count;
+    }
+
+    return LAHAR_ERR_ID_NOT_FOUND;
+}
+
+const char* __lahar_spv_v1_lookup_id_name(const LaharSPVInfo* info, uint32_t var_id) {
+    if (info->section_offsets.debug == UINT32_MAX) {
+        return NULL;
+    }
+
+    const uint32_t* code = (const uint32_t*)info->stage->code;
+
+    for (uint64_t i = info->section_offsets.debug; i < info->section_offsets.annotations;) {
+        const uint32_t word = code[i];
+        const uint16_t opcode = word & 0xFFFF;
+        const uint16_t word_count = word >> 16;
+
+        if (opcode == LAHAR_SPV_OP_NAME) {
+            const uint32_t target = code[i + 1];
+
+            if (target == var_id) {
+                return (const char*)&code[i + 2];
+            }
+        }
+
+        i += word_count;
+    }
+
+    return NULL;
+}
+
+uint32_t __lahar_spv_v1_lookup_set_binding(const LaharSPVInfo* info, uint32_t var_id, uint32_t* set_out, uint32_t* binding_out) {
+    LAHAR_ASSERT(info && set_out && binding_out);
+
+    const uint32_t* code = (const uint32_t*)info->stage->code;
+
+    uint32_t set = UINT32_MAX, binding = UINT32_MAX;
+
+    for (uint64_t i = info->section_offsets.annotations; i < info->section_offsets.types;) {
+        const uint32_t word = code[i];
+        const uint16_t opcode = word & 0xFFFF;
+        const uint16_t word_count = word >> 16;
+
+        if (opcode == LAHAR_SPV_OP_DECORATE) {
+            const uint32_t decorated_target = code[i + 1];
+            const uint32_t decoration_type = code[i + 2];
+
+            // not the target we're looking for
+            if (decorated_target != var_id) { i += word_count; continue; }
+
+            switch (decoration_type) {
+                case LAHAR_SPV_DECORATION_DESCRIPTOR_SET: {
+                    set = code[i + 3];
+                } break;
+                case LAHAR_SPV_DECORATION_BINDING: {
+                    binding = code[i + 3];
+                } break;
+
+                default: break;
+            }
+        }
+
+        if (set != UINT32_MAX && binding != UINT32_MAX) {
+            break;
+        }
+
+        i += word_count;
+    }
+
+    // Assume this is only called on uniforms, and so anything without
+    // a set/binding is malformed
+    if (set == UINT32_MAX || binding == UINT32_MAX) {
+        return LAHAR_ERR_ID_NOT_FOUND;
+    }
+
+    *set_out = set;
+    *binding_out = binding;
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+uint32_t __lahar_spv_v1_lookup_member_offset(const LaharSPVInfo* info, uint32_t struct_type_id, uint32_t member_index, uint32_t* offset_out) {
+    LAHAR_ASSERT(info && offset_out);
+
+    const uint32_t* code = (const uint32_t*)info->stage->code;
+
+    for (uint64_t i = info->section_offsets.annotations; i < info->section_offsets.types;) {
+        const uint32_t word = code[i];
+        const uint16_t opcode = word & 0xFFFF;
+        const uint16_t word_count = word >> 16;
+
+        if (opcode == LAHAR_SPV_OP_MEMBER_DECORATE) {
+            const uint32_t struct_target = code[i + 1];
+            const uint32_t target_member_index = code [i + 2];
+            const uint32_t deco_type = code[i + 3];
+
+            if (
+                struct_target == struct_type_id && 
+                target_member_index == member_index &&
+                deco_type == LAHAR_SPV_DECORATION_OFFSET
+            ) {
+                *offset_out = code[i + 4];
+                return LAHAR_ERR_SUCCESS;
+            }
+        }
+
+        i += word_count;
+    }
+
+    return LAHAR_ERR_ID_NOT_FOUND;
+}
+
+uint32_t __lahar_spv_v1_lookup_member_matrix_stride(const LaharSPVInfo* info, uint32_t struct_type_id, uint32_t member_index, uint32_t* stride_out) {
+    LAHAR_ASSERT(info && stride_out);
+
+    const uint32_t* code = (const uint32_t*)info->stage->code;
+
+    for (uint64_t i = info->section_offsets.annotations; i < info->section_offsets.types;) {
+        const uint32_t word = code[i];
+        const uint16_t opcode = word & 0xFFFF;
+        const uint16_t word_count = word >> 16;
+
+        if (opcode == LAHAR_SPV_OP_MEMBER_DECORATE) {
+            const uint32_t struct_target = code[i + 1];
+            const uint32_t target_member_index = code [i + 2];
+            const uint32_t deco_type = code[i + 3];
+
+            if (
+                struct_target == struct_type_id && 
+                target_member_index == member_index &&
+                deco_type == LAHAR_SPV_DECORATION_MATRIX_STRIDE
+            ) {
+                *stride_out = code[i + 4];
+                return LAHAR_ERR_SUCCESS;
+            }
+        }
+
+        i += word_count;
+    }
+
+    return LAHAR_ERR_ID_NOT_FOUND;
+}
+
+const char* __lahar_spv_v1_lookup_member_name(const LaharSPVInfo* info, uint32_t struct_type, uint32_t member_index) {
+    LAHAR_ASSERT(info);
+
+    if (info->section_offsets.debug == UINT32_MAX) {
+        return NULL;
+    }
+
+    const uint32_t* code = (const uint32_t*)info->stage->code;
+
+    for (uint64_t i = info->section_offsets.debug; i < info->section_offsets.annotations;) {
+        const uint32_t word = code[i];
+        const uint16_t opcode = word & 0xFFFF;
+        const uint16_t word_count = word >> 16;
+
+        if (opcode == LAHAR_SPV_OP_MEMBER_NAME) {
+            const uint32_t target_struct = code[i + 1];
+            const uint32_t target_member = code[i + 2];
+            const char* string_begin = (const char*)&code[i + 3];
+
+            if (target_struct == struct_type && target_member == member_index) {
+                return string_begin;
+            }
+        }
+
+        i += word_count;
+    }
+
+    return NULL;
+}
+
+uint32_t __lahar_spv_v1_lookup_constant(const LaharSPVInfo* info, uint32_t constant_id, uint32_t* value_out) {
+    LAHAR_ASSERT(info && value_out);
+
+    const uint32_t* code = (const uint32_t*)info->stage->code;
+
+    for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
+        const uint32_t word = code[i];
+        const uint16_t opcode = word & 0xFFFF;
+        const uint16_t word_count = word >> 16;
+
+        if (
+            opcode == LAHAR_SPV_OP_CONSTANT ||
+            opcode == LAHAR_SPV_OP_SPEC_CONSTANT
+        ) {
+            //const uint32_t result_type = code[i + 1];
+            const uint32_t result = code[i + 2];
+            const uint32_t value = code[i + 3];
+
+            if (result == constant_id) {
+                *value_out = value;
+                return LAHAR_ERR_SUCCESS;
+            }
+        }
+
+        i += word_count;
+    }
+
+    return LAHAR_ERR_ID_NOT_FOUND;
+}
+
+
+
+/** Auto-derefences pointer types. So for example, if a descriptor is of type
+ * Uniform Struct*, you'll get Struct out as your type.
+ */
+LaharSPVTypeInfo* __lahar_spv_get_type(const LaharSPVInfo* info, uint32_t id) {
+    for (uint32_t i = 0; i < info->type_count; i++) {
+        if (info->type_table[i].id == id) { 
+
+            if (info->type_table[i].type == LAHAR_SVT_POINTER) {
+                return __lahar_spv_get_type(info, info->type_table[i].component_type);
+            }
+            else {
+                return &info->type_table[i]; 
+            }
+
+        }
+    }
+
+    return NULL;
+}
+
+bool __lahar_spv_type_is_matrix(const LaharSPVTypeInfo* type) {
+    switch(type->type) {
+        case LAHAR_SVT_MAT2X3:
+        case LAHAR_SVT_MAT2X4:
+        case LAHAR_SVT_MAT3X2:
+        case LAHAR_SVT_MAT3X4:
+        case LAHAR_SVT_MAT4X2:
+        case LAHAR_SVT_MAT4X3:
+        case LAHAR_SVT_MAT2:
+        case LAHAR_SVT_MAT3:
+        case LAHAR_SVT_MAT4:
+        case LAHAR_SVT_DMAT2X3:
+        case LAHAR_SVT_DMAT2X4:
+        case LAHAR_SVT_DMAT3X2:
+        case LAHAR_SVT_DMAT3X4:
+        case LAHAR_SVT_DMAT4X2:
+        case LAHAR_SVT_DMAT4X3:
+        case LAHAR_SVT_DMAT2:
+        case LAHAR_SVT_DMAT3:
+            return true;
+        default:
+            return false;
+    }
+}
+
+uint32_t __lahar_spv_type_size_recurse(
+    const LaharSPVInfo* info,
+    const LaharSPVTypeInfo* type,
+    const LaharSPVMemberInfo* member_info,
+    bool include_padding
+) {
+    LAHAR_ASSERT(info && type);
+
+    switch (type->type) {
+        case LAHAR_SVT_UNKNOWN:
+        case LAHAR_SVT_VOID:
+        case LAHAR_SVT_SAMPLER:
+        case LAHAR_SVT_IMAGE:
+        case LAHAR_SVT_SAMPLER_IMAGE:
+        case LAHAR_SVT_POINTER:
+            return 0;
+
+        case LAHAR_SVT_BOOL:
+        case LAHAR_SVT_BVEC2:
+        case LAHAR_SVT_BVEC3:
+        case LAHAR_SVT_BVEC4:
+            return 0; // weird edge cases you should never see
+
+        case LAHAR_SVT_INT:
+        case LAHAR_SVT_UINT:
+        case LAHAR_SVT_HALF:
+        case LAHAR_SVT_FLOAT:
+        case LAHAR_SVT_DOUBLE:
+            return type->size_bytes;
+
+        case LAHAR_SVT_IVEC2:
+        case LAHAR_SVT_IVEC3:
+        case LAHAR_SVT_IVEC4:
+        case LAHAR_SVT_UVEC2:
+        case LAHAR_SVT_UVEC3:
+        case LAHAR_SVT_UVEC4:
+        case LAHAR_SVT_DVEC2:
+        case LAHAR_SVT_DVEC3:
+        case LAHAR_SVT_DVEC4:
+        case LAHAR_SVT_VEC2:
+        case LAHAR_SVT_VEC3:
+        case LAHAR_SVT_VEC4:
+        {
+            const LaharSPVTypeInfo* inner_type = __lahar_spv_get_type(info, type->component_type);
+            LAHAR_ASSERT(inner_type);
+
+            return type->size_components * inner_type->size_bytes;
+        }
+
+        case LAHAR_SVT_MAT2X3:
+        case LAHAR_SVT_MAT2X4:
+        case LAHAR_SVT_MAT3X2:
+        case LAHAR_SVT_MAT3X4:
+        case LAHAR_SVT_MAT4X2:
+        case LAHAR_SVT_MAT4X3:
+        case LAHAR_SVT_MAT2:
+        case LAHAR_SVT_MAT3:
+        case LAHAR_SVT_MAT4:
+        case LAHAR_SVT_DMAT2X3:
+        case LAHAR_SVT_DMAT2X4:
+        case LAHAR_SVT_DMAT3X2:
+        case LAHAR_SVT_DMAT3X4:
+        case LAHAR_SVT_DMAT4X2:
+        case LAHAR_SVT_DMAT4X3:
+        case LAHAR_SVT_DMAT2:
+        case LAHAR_SVT_DMAT3:
+        case LAHAR_SVT_DMAT4:
+            if (include_padding) {
+                LAHAR_ASSERT(member_info);
+                return member_info->matrix_stride * type->size_components;
+            }
+            else {
+                const LaharSPVTypeInfo* inner_type = __lahar_spv_get_type(info, type->component_type);
+                return type->size_components * __lahar_spv_type_size_recurse(info, inner_type, NULL, include_padding);
+            }
+
+        case LAHAR_SVT_STRUCT: 
+        {
+            const LaharSPVMemberInfo* last_member = &type->members[type->size_components - 1];
+            const LaharSPVTypeInfo* inner_type = __lahar_spv_get_type(info, last_member->id);
+            LAHAR_ASSERT(inner_type);
+
+            return last_member->offset + __lahar_spv_type_size_recurse(info, inner_type, last_member, include_padding);
+        }
+
+        case LAHAR_SVT_ARRAY:
+            return type->array_stride * type->size_components;
+    }
+
+    return 0;
+}
+
+/** Get the logical size of a type, other than include_padding causes matrix types to include their padding */
+uint32_t __lahar_spv_type_size(const LaharSPVInfo* info, const LaharSPVTypeInfo* type, bool include_padding) {
+    LAHAR_ASSERT(!__lahar_spv_type_is_matrix(type));
+    return __lahar_spv_type_size_recurse(info, type, NULL, include_padding);
+}
+
+/** Matrices can only be described as having a size in the context of a struct, so a member info must be supplied */
+uint32_t __lahar_spv_matrix_type_size(const LaharSPVInfo* info, const LaharSPVTypeInfo* type, const LaharSPVMemberInfo* member_info, bool include_padding) {
+    LAHAR_ASSERT(__lahar_spv_type_is_matrix(type));
+    return __lahar_spv_type_size_recurse(info, type, member_info, include_padding);
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+uint32_t __lahar_shader_stage_validate_spv_header(const uint32_t* spv) {
+    const uint32_t magic = 0x07230203;
+
+    if (spv[0] != magic) {
+        return LAHAR_ERR_MALFORMED_CODE;
+    }
+
+    const uint32_t version = spv[1];
+
+    if (version > VK_MAKE_VERSION(1, 0, 0)) {
+        lahar_warn("SPIR-V code is newer than Lahar's parser, best effort attempt to follow");
+    }
+
+    const uint32_t generator = spv[2];
+    const uint32_t tool_id = generator >> 16; //(generator & 0xFFFF0000) >> 16;
+
+    const char* msg = "Unknown Tool";
+
+    switch (tool_id) {
+        case 0: msg = "Khronos"; break;
+        case 1: msg = "LunarG"; break;
+        case 2: msg = "Valve"; break;
+        case 3: msg = "Codeplay"; break;
+        case 4: msg = "NVIDIA"; break;
+        case 5: msg = "ARM"; break;
+        case 6: msg = "Khronos LLM/SPIR-V Translator"; break;
+        case 7: msg = "Khronos SPIR-V Tools Assembler"; break;
+        case 8: msg = "Khronos Glslang Reference Front End"; break;
+        case 9: msg = "Qualcomm"; break;
+        case 10: msg = "AMD"; break;
+        case 11: msg = "Intel"; break;
+        case 12: msg = "Imagination"; break;
+        case 13: msg = "Google Shaderc over Glslang"; break;
+        case 14: msg = "Google spiregg"; break;
+        case 15: msg = "Google rspirv"; break;
+        case 16: msg = "X-LEGEND Mesa-IR/SPIR-V Translator"; break;
+        case 17: msg = "Khronos SPIR-V Tools Linker"; break;
+        case 18: msg = "Wine VKD3D Shader Compiler"; break;
+        case 19: msg = "Tellusim Clay Shader Compiler"; break;
+        case 20: msg = "W3C WebGPU Group WHLSL Shader Translator"; break;
+        case 21: msg = "Googl Clspv"; break;
+        case 22: msg = "LLVM MLIR SPIR-V Serializer"; break;
+        case 23: msg = "Google Tint Compiler"; break;
+        case 24: msg = "Google Angle Shader Compiler"; break;
+        case 25: msg = "Netease Games Messiah Shader Compiler"; break;
+        case 26: msg = "Xenia Emulator Microcode Translator"; break;
+        case 27: msg = "Embark Studios Rust GPU Compiler Backend"; break;
+        case 28: msg = "gfx-rs community Naga"; break;
+        case 29: msg = "Mikkosoft Productions MSP Shader Compiler"; break;
+        case 30: msg = "SpvGenTwo community SPIR-V IR Tools"; break;
+        case 31: msg = "Google Skia SkSL"; break;
+        case 32: msg = "TornadoVM Beehive SPIRV Toolkit"; break;
+        case 33: msg = "DragonJoker ShaderWriter"; break;
+        case 34: msg = "Rayan Hatout SPIRVSmith"; break;
+        case 35: msg = "Saarland University Shady"; break;
+        case 36: msg = "Taichi Graphics"; break;
+        case 37: msg = "heroseh Hero C Compiler"; break;
+        case 38: msg = "Meta SparkSL"; break;
+        case 39: msg = "SirLynix Nazara ShaderLang Compiler"; break;
+        case 40: msg = "Khronos Slang Compiler"; break;
+        case 41: msg = "Zig Software Foundation Zig Compiler"; break;
+        case 42: msg = "Rendong Liang sqp"; break;
+        case 43: msg = "LLVM SPIR-V Backend"; break;
+        case 44: msg = "Robert Kongrad Kongruent"; break;
+        case 45: msg = "Kitsunebi Games Nuvk SPIR-V Emitter and DLSL compiler"; break;
+        case 46: msg = "Nintendo"; break;
+        case 47: msg = "ARM"; break;
+        case 48: msg = "Goopax"; break;
+        case 49: msg = "Icyllis Milica Arc3D Shader Compiler"; break;
+        default: break;
+    }
+
+    lahar_trace("SPIR-V generated by: %s", msg);
+
+    //const uint32_t bound = spv[3];
+    //const uint32_t schema = spv[4];
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+uint32_t __lahar_spv_v1_build_section_offsets(LaharSPVInfo* info) {
+    const uint32_t* code = (const uint32_t*)info->stage->code;
+    const uint64_t words = info->stage->length / 4;
+
+    memset(&info->section_offsets, 0, sizeof(info->section_offsets));
+
+    uint32_t index = 5;
+    uint32_t phase = 0;
+    bool do_check = true;
+
+    do {
+        uint32_t word = code[index];
+        uint16_t opcode = word & 0xFFFF;
+        uint16_t word_count = word >> 16;
+
+        switch (phase) {
+            case 0: { // 0: in the capabilities
+                if (__lahar_spv_op_is_extension(opcode)) {
+                    phase++;
+                    info->section_offsets.extensions = index;
+                }
+                else if (__lahar_spv_op_is_mode_setting(opcode)) {
+                    phase += 2;
+                    info->section_offsets.extensions = UINT32_MAX;
+                    info->section_offsets.mode_setting = index;
+                }
+            } break;
+            case 1: { // 1: in the extensions
+                if (__lahar_spv_op_is_mode_setting(opcode)) { // mode setting is required, no extra branch
+                    phase++;
+                    info->section_offsets.mode_setting = index;
+                }
+            } break;
+            case 2: { // 2: in the mode setting instructions
+                if (__lahar_spv_op_is_debug(opcode)) {
+                    phase++;
+                    info->section_offsets.debug = index;
+                }
+                else if (__lahar_spv_op_is_annotation(opcode)) {
+                    phase += 2;
+                    info->section_offsets.debug = UINT32_MAX;
+                    info->section_offsets.annotations = index;
+                }
+            } break;
+            case 3: { // 3: in the debug instructions
+                if (__lahar_spv_op_is_annotation(opcode)) {
+                    phase++;
+                    info->section_offsets.annotations = index;
+                }
+                else if (__lahar_spv_op_is_type_declaration(opcode)) {
+                    phase += 2;
+                    info->section_offsets.annotations = UINT32_MAX;
+                    info->section_offsets.types = index;
+                }
+            } break;
+            case 4: { // 4: in the annotations
+                if (__lahar_spv_op_is_type_declaration(opcode)) {
+                    phase++;
+                    info->section_offsets.types = index;
+                }
+            } break;
+            case 5: { // 5: in the type declarations 
+                if (opcode == LAHAR_SPV_OP_FUNCTION) {
+                    phase++;
+                    info->section_offsets.functions = index;
+                }
+            } break;
+
+            default: do_check = false; break;
+        }
+
+        index += word_count;
+    } while (index < words && do_check);
+
+    return phase == 6 ? LAHAR_ERR_SUCCESS : LAHAR_ERR_MALFORMED_CODE;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+uint32_t __lahar_spv_v1_count_types(LaharSPVInfo* info) {
+    LAHAR_ASSERT(info);
+
+    const LaharShaderStage* stage = info->stage;
+    const uint32_t* code = (const uint32_t*)stage->code;
+
+    LAHAR_ASSERT(stage && code);
+
+    info->type_count = 0;
+
+    for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
+        uint32_t word = code[i];
+        uint16_t opcode = word & 0xFFFF;
+        uint16_t word_count = word >> 16;
+
+        if (word_count == 0) { return LAHAR_ERR_MALFORMED_CODE; }
+
+        if (__lahar_spv_op_is_type_declaration(opcode)) {
+            info->type_count++;
+        }
+
+        i += word_count;
+    }
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+
+
+uint32_t __lahar_spv_v1_extract_types(LaharSPVInfo* info) {
+    LAHAR_ASSERT(info);
+
+    const LaharShaderStage* stage = info->stage;
+    LAHAR_ASSERT(stage);
+
+    const uint32_t* code = (const uint32_t*)stage->code;
+    LAHAR_ASSERT(code);
+
+    info->type_table = (LaharSPVTypeInfo*)lahar_temp_alloc(sizeof(*info->type_table) * info->type_count);
+
+    LaharSPVTypeInfo* tinfo = NULL;
+    
+    info->type_count = 0;
+
+    uint32_t err = LAHAR_ERR_SUCCESS;
+
+    for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
+        uint32_t word = code[i];
+        uint16_t opcode = word & 0xFFFF;
+        uint16_t word_count = word >> 16;
+
+        switch (opcode) {
+            case LAHAR_SPV_OP_TYPE_VOID: {
+                tinfo = &info->type_table[info->type_count++];
+                tinfo->id = code[i + 1];
+                tinfo->type = LAHAR_SVT_VOID;
+                tinfo->tree_size = 0;
+            } break;
+            case LAHAR_SPV_OP_TYPE_BOOL: {
+                tinfo = &info->type_table[info->type_count++];
+                tinfo->id = code[i + 1];
+                tinfo->type = LAHAR_SVT_BOOL;
+                tinfo->tree_size = 1;
+            } break;
+            case LAHAR_SPV_OP_TYPE_INT: {
+                tinfo = &info->type_table[info->type_count++];
+                tinfo->id = code[i + 1];
+                tinfo->size_bytes = code[i + 2] / 8;
+                tinfo->is_signed = (bool)code[i + 3];
+                tinfo->tree_size = 1;
+                tinfo->type = tinfo->is_signed ? LAHAR_SVT_INT : LAHAR_SVT_UINT;
+            } break;
+            case LAHAR_SPV_OP_TYPE_FLOAT: {
+                tinfo = &info->type_table[info->type_count++];
+                tinfo->id = code[i + 1];
+                tinfo->size_bytes = code[i + 2] / 8;
+
+                switch (tinfo->size_bytes) {
+                    case 2: tinfo->type = LAHAR_SVT_HALF; break;
+                    case 8: tinfo->type = LAHAR_SVT_DOUBLE; break;
+                    default:
+                    case 4: tinfo->type = LAHAR_SVT_FLOAT; break;
+                }
+
+                tinfo->is_signed = true;
+                tinfo->tree_size = 1;
+            } break;
+            case LAHAR_SPV_OP_TYPE_VECTOR: {
+                tinfo = &info->type_table[info->type_count++];
+                tinfo->id = code[i + 1];
+                tinfo->tree_size = 1;
+
+                const uint32_t component_id = code[i + 2];
+                const uint32_t component_count = code[i + 3];
+
+                const LaharSPVTypeInfo* component_info = __lahar_spv_get_type(info, component_id);
+
+                if (!component_info) {
+                    lahar_trace("Failed to find vector component type");
+                    return LAHAR_ERR_MALFORMED_CODE;
+                }
+
+                tinfo->size_components = component_count;
+                tinfo->size_bytes = component_count * component_info->size_bytes;
+                tinfo->is_signed = component_info->is_signed;
+                tinfo->component_type = component_id;
+
+                switch (component_count) {
+                    case 2: {
+                        switch (component_info->type) {
+                            case LAHAR_SVT_FLOAT: tinfo->type = LAHAR_SVT_VEC2; break;
+                            case LAHAR_SVT_INT: tinfo->type = LAHAR_SVT_IVEC2; break;
+                            case LAHAR_SVT_UINT: tinfo->type = LAHAR_SVT_UVEC2; break;
+                            case LAHAR_SVT_BOOL: tinfo->type = LAHAR_SVT_BVEC2; break;
+                            case LAHAR_SVT_DOUBLE: tinfo->type = LAHAR_SVT_DVEC2; break;
+                            default: return LAHAR_ERR_MALFORMED_CODE;
+                        }
+                    } break;
+                    case 3: {
+                        switch (component_info->type) {
+                            case LAHAR_SVT_FLOAT: tinfo->type = LAHAR_SVT_VEC3; break;
+                            case LAHAR_SVT_INT: tinfo->type = LAHAR_SVT_IVEC3; break;
+                            case LAHAR_SVT_UINT: tinfo->type = LAHAR_SVT_UVEC3; break;
+                            case LAHAR_SVT_BOOL: tinfo->type = LAHAR_SVT_BVEC3; break;
+                            case LAHAR_SVT_DOUBLE: tinfo->type = LAHAR_SVT_DVEC3; break;
+                            default: return LAHAR_ERR_MALFORMED_CODE;
+                        }
+                    } break;
+                    case 4: {
+                        switch (component_info->type) {
+                            case LAHAR_SVT_FLOAT: tinfo->type = LAHAR_SVT_VEC4; break;
+                            case LAHAR_SVT_INT: tinfo->type = LAHAR_SVT_IVEC4; break;
+                            case LAHAR_SVT_UINT: tinfo->type = LAHAR_SVT_UVEC4; break;
+                            case LAHAR_SVT_BOOL: tinfo->type = LAHAR_SVT_BVEC4; break;
+                            case LAHAR_SVT_DOUBLE: tinfo->type = LAHAR_SVT_DVEC4; break;
+                            default: return LAHAR_ERR_MALFORMED_CODE;
+                        }
+                    } break;
+                    default:
+                        return LAHAR_ERR_MALFORMED_CODE;
+                }
+            } break;
+            case LAHAR_SPV_OP_TYPE_MATRIX: {
+                tinfo = &info->type_table[info->type_count++];
+                tinfo->id = code[i + 1];
+                tinfo->tree_size = 1;
+
+                const uint32_t component_id = code[i + 2];
+                const uint32_t component_count = code[i + 3];
+
+                const LaharSPVTypeInfo* component_info = __lahar_spv_get_type(info, component_id);
+
+                if (!component_info) {
+                    lahar_trace("Failed to find matrix component type");
+                    return LAHAR_ERR_MALFORMED_CODE;
+                }
+
+                tinfo->size_components = component_count;
+                tinfo->size_bytes = component_count * component_info->size_bytes;
+                tinfo->is_signed = component_info->is_signed;
+                tinfo->component_type = component_id;
+
+                switch (component_count) {
+                    case 2: {
+                        switch (component_info->type) {
+                            case LAHAR_SVT_VEC2: tinfo->type = LAHAR_SVT_MAT2; break;
+                            case LAHAR_SVT_VEC3: tinfo->type = LAHAR_SVT_MAT2X3; break;
+                            case LAHAR_SVT_VEC4: tinfo->type = LAHAR_SVT_MAT2X4; break;
+                            case LAHAR_SVT_DVEC2: tinfo->type = LAHAR_SVT_DMAT2; break;
+                            case LAHAR_SVT_DVEC3: tinfo->type = LAHAR_SVT_DMAT2X3; break;
+                            case LAHAR_SVT_DVEC4: tinfo->type = LAHAR_SVT_DMAT2X4; break;
+                            default: return LAHAR_ERR_MALFORMED_CODE;
+                        }
+                    } break;
+                    case 3: {
+                        switch (component_info->type) {
+                            case LAHAR_SVT_VEC2: tinfo->type = LAHAR_SVT_MAT3X2; break;
+                            case LAHAR_SVT_VEC3: tinfo->type = LAHAR_SVT_MAT3; break;
+                            case LAHAR_SVT_VEC4: tinfo->type = LAHAR_SVT_MAT3X4; break;
+                            case LAHAR_SVT_DVEC2: tinfo->type = LAHAR_SVT_DMAT3X2; break;
+                            case LAHAR_SVT_DVEC3: tinfo->type = LAHAR_SVT_DMAT3; break;
+                            case LAHAR_SVT_DVEC4: tinfo->type = LAHAR_SVT_DMAT3X4; break;
+                            default: return LAHAR_ERR_MALFORMED_CODE;
+                        }
+                    } break;
+                    case 4: {
+                        switch (component_info->type) {
+                            case LAHAR_SVT_VEC2: tinfo->type = LAHAR_SVT_MAT4X2; break;
+                            case LAHAR_SVT_VEC3: tinfo->type = LAHAR_SVT_MAT4X3; break;
+                            case LAHAR_SVT_VEC4: tinfo->type = LAHAR_SVT_MAT4; break;
+                            case LAHAR_SVT_DVEC2: tinfo->type = LAHAR_SVT_DMAT4X2; break;
+                            case LAHAR_SVT_DVEC3: tinfo->type = LAHAR_SVT_DMAT4X3; break;
+                            case LAHAR_SVT_DVEC4: tinfo->type = LAHAR_SVT_DMAT4; break;
+                            default: return LAHAR_ERR_MALFORMED_CODE;
+                        }
+                    } break;
+                    default:
+                        return LAHAR_ERR_MALFORMED_CODE;
+                }
+            } break;
+            case LAHAR_SPV_OP_TYPE_IMAGE: {
+                tinfo = &info->type_table[info->type_count++];
+                tinfo->id = code[i + 1];
+                tinfo->type = LAHAR_SVT_IMAGE;
+                tinfo->tree_size = 1;
+            } break;
+            case LAHAR_SPV_OP_TYPE_SAMPLER: {
+                tinfo = &info->type_table[info->type_count++];
+                tinfo->id = code[i + 1];
+                tinfo->type = LAHAR_SVT_SAMPLER;
+                tinfo->tree_size = 1;
+            } break;
+            case LAHAR_SPV_OP_TYPE_SAMPLED_IMAGE: {
+                tinfo = &info->type_table[info->type_count++];
+                tinfo->id = code[i + 1];
+                tinfo->type = LAHAR_SVT_SAMPLER_IMAGE;
+                tinfo->tree_size = 1;
+            } break;
+            case LAHAR_SPV_OP_TYPE_STRUCT: {
+                tinfo = &info->type_table[info->type_count++];
+                tinfo->id = code[i + 1];
+                tinfo->type = LAHAR_SVT_STRUCT;
+
+                const uint32_t member_count = word_count - 2;
+                tinfo->size_components = member_count;
+
+                tinfo->members = (LaharSPVMemberInfo*)lahar_temp_alloc(sizeof(*tinfo->members) * member_count);
+
+                tinfo->tree_size = 1;
+
+                for (uint32_t j = 0; j < tinfo->size_components; j++) {
+                    LaharSPVMemberInfo* member_info = &tinfo->members[j];
+                    member_info->id = code[i + 2 + j];
+
+                    const char* member_name = __lahar_spv_v1_lookup_member_name(info, tinfo->id, j);
+
+                    if (member_name) {
+                        member_info->name = lahar_temp_strdup(member_name);
+                    }
+
+                    __lahar_spv_v1_lookup_member_offset(info, tinfo->id, j, &member_info->offset);
+                    __lahar_spv_v1_lookup_member_matrix_stride(info, tinfo->id, j, &member_info->matrix_stride);
+
+                    const LaharSPVTypeInfo* inner_type = __lahar_spv_get_type(info, member_info->id);
+                    if (!inner_type) {
+                        return LAHAR_ERR_MALFORMED_CODE;
+                    }
+
+                    tinfo->tree_size += inner_type->tree_size;
+                }
+            } break;
+            case LAHAR_SPV_OP_TYPE_ARRAY: {
+                tinfo = &info->type_table[info->type_count++];
+                tinfo->id = code[i + 1];
+                tinfo->type = LAHAR_SVT_ARRAY;
+
+
+                const uint32_t component_id = code[i + 2];
+                const uint32_t component_count_id = code[i + 3];
+
+                const LaharSPVTypeInfo* component_info = __lahar_spv_get_type(info, component_id);
+
+                if (!component_info) {
+                    lahar_trace("Failed to find array component type");
+                    return LAHAR_ERR_MALFORMED_CODE;
+                }
+
+                if ((err = __lahar_spv_v1_lookup_constant(info, component_count_id, &tinfo->size_components))) {
+                    if (err == LAHAR_ERR_ID_NOT_FOUND) {
+                        lahar_trace("Failed to find array length for type");
+                        return LAHAR_ERR_MALFORMED_CODE;
+                    }
+                    else { return err; }
+                }
+
+                // builtins might have no annotation
+                if ((err = __lahar_spv_v1_lookup_type_array_stride(info, tinfo->id, &tinfo->array_stride))) {
+                    if (err != LAHAR_ERR_ID_NOT_FOUND) {
+                        return err;
+                    }
+                }                
+
+                tinfo->component_type = component_id;
+                tinfo->size_bytes = tinfo->array_stride * tinfo->size_components;
+                tinfo->tree_size = 1 + component_info->tree_size;
+            } break;
+            case LAHAR_SPV_OP_TYPE_RUNTIME_ARRAY: {
+                tinfo = &info->type_table[info->type_count++];
+                tinfo->id = code[i + 1];
+                tinfo->type = LAHAR_SVT_ARRAY;
+
+                // builtins might have no annotation
+                if ((err = __lahar_spv_v1_lookup_type_array_stride(info, tinfo->id, &tinfo->array_stride))) {
+                    if (err != LAHAR_ERR_ID_NOT_FOUND) {
+                        return err;
+                    }
+                }                
+
+                const uint32_t component_id = code[i + 2];
+
+                const LaharSPVTypeInfo* component_info = __lahar_spv_get_type(info, component_id);
+
+                if (!component_info) {
+                    lahar_trace("Failed to find array component type");
+                    return LAHAR_ERR_MALFORMED_CODE;
+                }
+
+                tinfo->component_type = component_id;
+                tinfo->tree_size = 1 + component_info->tree_size;
+            } break;
+            case LAHAR_SPV_OP_TYPE_POINTER: {
+                tinfo = &info->type_table[info->type_count++];
+                tinfo->type = LAHAR_SVT_POINTER;
+
+                const uint32_t pointer_type = code[i + 1];
+                //const uint32_t storage_class = code[i + 2];
+                const uint32_t pointed_type = code[i + 3];
+
+                tinfo->id = pointer_type;
+                tinfo->component_type = pointed_type;
+            } break;
+            case LAHAR_SPV_OP_TYPE_OPAQUE: {} break;
+            case LAHAR_SPV_OP_TYPE_FUNCTION: {} break;
+            default:
+                break;
+        }
+
+        i += word_count;
+    }
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+/** This function is a little unusual, it's designed to be called
+ * repeatedly with different infos, but the same slots_out and
+ * unique_set_bindings_out, and it expands the usbo and increments
+ * the slot count appropriately.
+ *
+ * It uses temp_alloc oddly to achieve this, using it to grow
+ * the last allocation in place
+ */
+uint32_t __lahar_spv_v1_count_unique_descriptor_slots(
+    LaharSPVInfo* info,
+    uint32_t* slots_out,
+    LaharSPVDescriptorSize** unique_set_bindings_out
+) {
+    LAHAR_ASSERT(info && slots_out && unique_set_bindings_out);
+
+    if (info->section_offsets.annotations == UINT32_MAX) {
+        // This shader has no descriptors
+        return LAHAR_ERR_SUCCESS;
+    }
+
+    LAHAR_ASSERT(
+        info->section_offsets.types != UINT32_MAX &&
+        info->section_offsets.functions != UINT32_MAX
+    );
+
+    const uint32_t* code = (const uint32_t*)info->stage->code;
+
+    LaharSPVDescriptorSize* slot_array = *unique_set_bindings_out;
+    if (*slots_out) { LAHAR_ASSERT(slot_array); }
+
+    // search for vars
+    for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
+        const uint32_t word = code[i];
+        const uint16_t opcode = word & 0xFFFF;
+        const uint16_t word_count = word >> 16;
+
+        // found a var
+        if (opcode == LAHAR_SPV_OP_VARIABLE) {
+            const uint32_t var_type = code[i + 1];
+            const uint32_t var_id = code[i + 2];
+            const uint32_t var_storage_class = code[i + 3];
+
+            if (
+                var_storage_class != LAHAR_SPV_STORAGE_CLASS_UNIFORM_CONSTANT &&
+                var_storage_class != LAHAR_SPV_STORAGE_CLASS_UNIFORM &&
+                var_storage_class != LAHAR_SPV_STORAGE_CLASS_STORAGE_BUFFER
+            ) {
+                i += word_count;
+                continue; // not a uniform
+            }
+
+            uint32_t set = UINT32_MAX, binding = UINT32_MAX;
+            uint32_t err = __lahar_spv_v1_lookup_set_binding(info, var_id, &set, &binding);
+
+            if (err) { 
+                if (err == LAHAR_ERR_ID_NOT_FOUND) { return LAHAR_ERR_MALFORMED_CODE; }
+                else { return err; }
+            }
+
+            LAHAR_ASSERT(set != UINT32_MAX && binding != UINT32_MAX);
+
+            // do a dedup pass to check if we've seen this descriptor already
+            bool already_seen = false;
+
+            for (uint64_t j = 0; j < *slots_out; j++) {
+                if (slot_array[j].set == set && slot_array[j].binding == binding) {
+                    already_seen = true;
+                    break;
+                }
+            }
+
+            if (already_seen) {
+                i += word_count;
+                continue;
+            }
+
+            // We haven't, so create info for it
+            LaharSPVDescriptorSize* desc_size = (LaharSPVDescriptorSize*)lahar_temp_alloc_aligned(
+                sizeof(*slot_array),
+                _Alignof(LaharSPVDescriptorSize)
+            );
+
+            desc_size->set = set;
+            desc_size->binding = binding;
+
+            LaharSPVTypeInfo* var_type_info = __lahar_spv_get_type(info, var_type);
+            if (!var_type_info) {
+                lahar_trace("Descriptor references invalid type");
+                return LAHAR_ERR_MALFORMED_CODE;
+            }
+
+            // The struct already counts itself as a 1, so
+            // the tree size should be copied directly
+            desc_size->tree_size = var_type_info->tree_size;
+
+            if (slot_array == NULL) {
+                slot_array = *unique_set_bindings_out = desc_size;
+            }
+
+            *slots_out = *slots_out + 1;
+        }
+
+        i += word_count;
+    }
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+
+void __lahar_spv_v1_count_input_slots(const LaharSPVInfo* info, uint32_t* count_out) {
+    LAHAR_ASSERT(info && count_out);
+
+    *count_out = 0;
+    const uint32_t* code = (const uint32_t*)info->stage->code;
+
+    for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
+        const uint32_t word = code[i];
+        const uint16_t opcode = word & 0xFFFF;
+        const uint16_t word_count = word >> 16;
+
+        if (opcode == LAHAR_SPV_OP_VARIABLE) {
+            //const uint32_t var_type = code[i + 1];
+            const uint32_t var_id = code[i + 2];
+            const uint32_t var_storage_class = code[i + 3];
+
+            if (
+                var_storage_class == LAHAR_SPV_STORAGE_CLASS_INPUT &&
+                !__lahar_spv_v1_var_lookup_is_builtin(info, var_id)
+            ) {
+                *count_out += 1;
+            }
+        }
+        
+        i += word_count;
+    }
+}
+
+uint32_t __lahar_spv_v1_count_push_contant_slots(LaharSPVInfo* info, uint32_t* count_out, bool* saw) {
+    LAHAR_ASSERT(info && count_out && saw);
+
+    *count_out = 0;
+    const uint32_t* code = (const uint32_t*)info->stage->code;
+    *saw = false;
+
+    for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
+        const uint32_t word = code[i];
+        const uint16_t opcode = word & 0xFFFF;
+        const uint16_t word_count = word >> 16;
+
+        if (opcode == LAHAR_SPV_OP_VARIABLE) {
+            const uint32_t var_type = code[i + 1];
+            //const uint32_t var_id = code[i + 2];
+            const uint32_t var_storage_class = code[i + 3];
+
+            if (var_storage_class != LAHAR_SPV_STORAGE_CLASS_PUSH_CONSTANT) {
+                i += word_count;
+                continue;
+            }
+
+            LaharSPVTypeInfo* push_block_type = __lahar_spv_get_type(info, var_type);
+            if (!push_block_type) {
+                lahar_trace("Push block references invalid type");
+                return LAHAR_ERR_MALFORMED_CODE;
+            }
+
+            *saw = true;
+            *count_out = push_block_type->tree_size;
+        }
+        
+        i += word_count;
+    }
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+
+
+uint32_t __lahar_spv_v1_extract_inputs(const LaharSPVInfo* info, LaharShaderVarInfo* vars, uint32_t* var_count) {
+    LAHAR_ASSERT(info && vars && var_count);
+
+    uint32_t err;
+    const uint32_t* code = (const uint32_t*)info->stage->code;
+
+    for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
+        const uint32_t word = code[i];
+        const uint16_t opcode = word & 0xFFFF;
+        const uint16_t word_count = word >> 16;
+
+        if (opcode == LAHAR_SPV_OP_VARIABLE) {
+            const uint32_t var_type = code[i + 1];
+            const uint32_t var_id = code[i + 2];
+            const uint32_t var_storage_class = code[i + 3];
+
+            if (
+                var_storage_class == LAHAR_SPV_STORAGE_CLASS_INPUT &&
+                !__lahar_spv_v1_var_lookup_is_builtin(info, var_id)
+            ) {
+                LaharShaderVarInfo* varinfo = &vars[*var_count];
+                *var_count = *var_count + 1;
+                memset(varinfo, 0, sizeof(*varinfo));
+
+                varinfo->storage_class = LAHAR_SVSC_INPUT;
+
+                if ((err = __lahar_spv_v1_lookup_input_location(info, var_id, &varinfo->location))) {
+                    lahar_trace("Failed to extract input location");
+                    return err;
+                }
+
+                const LaharSPVTypeInfo* type_info = __lahar_spv_get_type(info, var_type);
+                varinfo->type = type_info->type;
+                varinfo->size = type_info->size_bytes;
+                varinfo->stages = info->stage->stage;
+
+                varinfo->child_vars_begin = UINT32_MAX;
+                varinfo->child_vars_end = UINT32_MAX;
+                varinfo->parent_var = UINT32_MAX;
+
+
+                const char* name = __lahar_spv_v1_lookup_id_name(info, var_id);
+
+                if (name) {
+                    varinfo->path = lahar_temp_strdup(name);
+                }
+            }
+        }
+
+        i += word_count;
+    }
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+
+
+uint32_t __lahar_spv_v1_extract_subvars(
+    LaharSPVInfo* info,
+    const LaharSPVTypeInfo* type_info,
+    const LaharSPVMemberInfo* member_info,
+    LaharShaderVarInfo* var,
+    LaharShaderVarInfo* vars, uint32_t* var_count
+) {
+    uint32_t err = LAHAR_ERR_SUCCESS;
+
+    if (type_info->type == LAHAR_SVT_ARRAY) {
+        const uint32_t start = *var_count;
+        const uint32_t end = start + 1;
+
+        const LaharSPVTypeInfo* inner_type = __lahar_spv_get_type(info, type_info->component_type);
+
+        if (!inner_type) {
+            lahar_trace("While building the vars for a descriptor, found an array that has unknown type");
+            return LAHAR_ERR_MALFORMED_CODE;
+        }
+
+        LaharShaderVarInfo* child_var = &vars[*var_count];
+        *var_count = *var_count + 1;
+
+        memset(child_var, 0, sizeof(*child_var));
+
+        child_var->type = inner_type->type;
+        child_var->storage_class = var->storage_class;
+        child_var->spv_var_id = UINT32_MAX;
+        child_var->spv_type_id = inner_type->id;
+        child_var->parent_var = (uint32_t)(var - vars);
+
+        if (inner_type->type == LAHAR_SVT_ARRAY) {
+            child_var->size = inner_type->array_stride * inner_type->size_components;
+            child_var->stride = inner_type->array_stride;
+        }
+        else if (__lahar_spv_type_is_matrix(inner_type)) {
+            LAHAR_ASSERT(member_info); // This makes no sense, you can't have a mat4[] at the top level
+
+            child_var->size = __lahar_spv_matrix_type_size(info, inner_type, member_info, true);
+            child_var->stride = member_info->matrix_stride;
+        }
+        else {
+            child_var->size = __lahar_spv_type_size(info, inner_type, true);
+        }
+
+        if (var->path) {
+            uint64_t plen = strlen(var->path);
+            uint64_t mlen = 3;
+
+            char* path = (char*)lahar_temp_alloc(plen + mlen + 1);
+            child_var->path = path;
+
+            memcpy(path, var->path, plen);
+            path += plen;
+
+            memcpy(path, "[0]", mlen);
+            path += mlen;
+
+            *path = '\0';
+        }
+
+        if ((err = __lahar_spv_v1_extract_subvars(info, inner_type, member_info, child_var, vars, var_count))) {
+            return err;
+        }
+
+        var->child_vars_begin = start;
+        var->child_vars_end = end;
+    }
+    else if (type_info->type == LAHAR_SVT_STRUCT) {
+        if (type_info->size_components == 0) { // empty struct case
+            var->child_vars_begin = UINT32_MAX;
+            var->child_vars_end = UINT32_MAX;
+            return LAHAR_ERR_SUCCESS;
+        } 
+
+        const uint32_t start = *var_count;
+        const uint32_t end = start + type_info->size_components;
+
+        *var_count = *var_count + type_info->size_components;
+
+        for (uint32_t i = start; i < end; i++) {
+            LaharShaderVarInfo* child_var = &vars[i];
+            memset(child_var, 0, sizeof(*child_var));
+
+            const uint32_t member_index = i - start;
+            const LaharSPVMemberInfo* current_member_info = &type_info->members[member_index];
+
+            const LaharSPVTypeInfo* member_type = __lahar_spv_get_type(info, current_member_info->id);
+
+            if (!member_type) {
+                lahar_trace("While building the vars for a descriptor, found a member that has unknown type");
+                return LAHAR_ERR_MALFORMED_CODE;
+            }
+
+            child_var->type = member_type->type;
+            child_var->storage_class = var->storage_class;
+            child_var->spv_var_id = UINT32_MAX;
+            child_var->spv_type_id = current_member_info->id;
+            child_var->offset = current_member_info->offset;
+            child_var->parent_var = (uint32_t)(var - vars);
+
+            if (member_type->type == LAHAR_SVT_ARRAY) {
+                child_var->size = member_type->array_stride * member_type->size_components;
+                child_var->stride = member_type->array_stride;
+            }
+            else if (__lahar_spv_type_is_matrix(member_type)) {
+                child_var->size = __lahar_spv_matrix_type_size(info, member_type, current_member_info, true);
+                child_var->stride = current_member_info->matrix_stride;
+            }
+            else {
+                child_var->size = __lahar_spv_type_size(info, member_type, true);
+            }
+
+            if (var->path && current_member_info->name) {
+                uint64_t plen = strlen(var->path);
+                uint64_t mlen = strlen(current_member_info->name);
+
+                char* path = (char*)lahar_temp_alloc(plen + mlen + 2);
+                child_var->path = path;
+
+                memcpy(path, var->path, plen);
+                path += plen;
+
+                *path = '.';
+                path++;
+
+                memcpy(path, current_member_info->name, mlen);
+                path += mlen;
+
+                *path = '\0';
+            }
+        }
+
+        var->size = __lahar_spv_type_size(info, type_info, true);
+
+        for (uint32_t i = start; i < end; i++) {
+            LaharShaderVarInfo* child_var = &vars[i];
+
+            const uint32_t member_index = i - start;
+            const LaharSPVMemberInfo* current_member_info = &type_info->members[member_index];
+
+            const LaharSPVTypeInfo* member_type = __lahar_spv_get_type(info, current_member_info->id);
+
+            if ((err = __lahar_spv_v1_extract_subvars(info, member_type, current_member_info, child_var, vars, var_count))) {
+                return err;
+            }
+        }
+
+        var->child_vars_begin = start;
+        var->child_vars_end = end;
+    }
+    // primitive, do nothing
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+uint32_t __lahar_spv_v1_extract_descriptors(LaharSPVInfo* info, LaharShaderVarInfo* vars, uint32_t* var_count) {
+    uint32_t err = LAHAR_ERR_SUCCESS;
+    const uint32_t* code = (const uint32_t*)info->stage->code;
+
+    for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
+        const uint32_t word = code[i];
+        const uint16_t opcode = word & 0xFFFF;
+        const uint16_t word_count = word >> 16;
+
+        if (opcode == LAHAR_SPV_OP_VARIABLE) {
+            const uint32_t var_type = code[i + 1];
+            const uint32_t var_id = code[i + 2];
+            const uint32_t var_storage_class = code[i + 3];
+
+            if (
+                var_storage_class != LAHAR_SPV_STORAGE_CLASS_UNIFORM &&
+                var_storage_class != LAHAR_SPV_STORAGE_CLASS_UNIFORM_CONSTANT &&
+                var_storage_class != LAHAR_SPV_STORAGE_CLASS_STORAGE_BUFFER
+            ) {
+                i += word_count; // not a descriptor
+                continue;
+            }
+
+            uint32_t set = UINT32_MAX, binding = UINT32_MAX;
+
+            if ((err = __lahar_spv_v1_lookup_set_binding(info, var_id, &set, &binding))) {
+                lahar_trace("Failed to find descriptor set/binding");
+
+                if (err == LAHAR_ERR_ID_NOT_FOUND) { return LAHAR_ERR_MALFORMED_CODE; }
+                else { return err; }
+            }
+
+            LAHAR_ASSERT(set != UINT32_MAX && binding != UINT32_MAX);
+
+            LaharSPVTypeInfo* descriptor_type = __lahar_spv_get_type(info, var_type);
+            if (!descriptor_type) {
+                lahar_trace("Failed to find descriptor type");
+                return LAHAR_ERR_MALFORMED_CODE;
+            }
+
+            bool seen = false;
+
+            for (uint32_t j = 0; j < *var_count; j++) {
+                LaharShaderVarInfo* desc = &vars[j];
+
+                bool is_uniform = desc->storage_class == LAHAR_SVSC_UNIFORM_BUFFER || desc->storage_class == LAHAR_SVSC_STORAGE_BUFFER;
+
+                if (is_uniform && desc->set == set && desc->binding == binding) {
+                    seen = true;
+
+                    #ifdef __cplusplus
+                    int new_stages = desc->stages | info->stage->stage;
+                    desc->stages = (VkShaderStageFlagBits)new_stages;
+                    #else
+                    desc->stages |= info->stage->stage;
+                    #endif
+                }
+            }
+
+            if (seen) { i += word_count; continue; }
+
+            LaharShaderVarInfo* descriptor_var = &vars[*var_count];
+            *var_count = *var_count + 1;
+
+            memset(descriptor_var, 0, sizeof(*descriptor_var));
+
+            if (var_storage_class == LAHAR_SPV_STORAGE_CLASS_UNIFORM) {
+                // have to read the decoration to know if it's an SSBO in older spirv
+                // in newer spirv, this deco doesn't exist, so we'll correctly
+                // match it by the storage class instead
+                
+                if (__lahar_spv_v1_lookup_is_bufferblock(info, descriptor_type->id)) {
+                    descriptor_var->storage_class = LAHAR_SVSC_STORAGE_BUFFER;
+                }
+                else {
+                    descriptor_var->storage_class = LAHAR_SVSC_UNIFORM_BUFFER;
+                }
+            }
+            else if (var_storage_class == LAHAR_SPV_STORAGE_CLASS_STORAGE_BUFFER) {
+                descriptor_var->storage_class = LAHAR_SVSC_STORAGE_BUFFER;
+            }
+            else if (var_storage_class == LAHAR_SPV_STORAGE_CLASS_UNIFORM_CONSTANT) {
+                descriptor_var->storage_class = LAHAR_SVSC_UNIFORM_CONSTANT;
+            }
+            else {
+                lahar_trace("Unknown storage class %d", var_storage_class);
+                return LAHAR_ERR_MALFORMED_CODE;
+            }
+
+            descriptor_var->set = set;
+            descriptor_var->binding = binding;
+            descriptor_var->type = descriptor_type->type;
+            descriptor_var->size = descriptor_type->size_bytes;
+            descriptor_var->stages = info->stage->stage;
+
+            if (descriptor_type->type == LAHAR_SVT_ARRAY) {
+                descriptor_var->array_size = descriptor_type->size_components;
+                descriptor_var->stride = descriptor_type->array_stride;
+            }
+
+            descriptor_var->spv_type_id = var_type;
+            descriptor_var->spv_var_id = var_id;
+
+            const char* name = __lahar_spv_v1_lookup_id_name(info, var_id);
+
+            if (name) {
+                descriptor_var->path = lahar_temp_strdup(name);
+            }
+
+            if ((err = __lahar_spv_v1_extract_subvars(info, descriptor_type, NULL, descriptor_var, vars, var_count))) {
+                return err;
+            }
+
+            descriptor_var->parent_var = UINT32_MAX;
+        }
+
+        i += word_count;
+    }
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+
+uint32_t __lahar_spv_v1_extract_push_block(LaharSPVInfo* info, LaharShaderVarInfo* vars, uint32_t* var_count) {
+    uint32_t err = LAHAR_ERR_SUCCESS;
+    const uint32_t* code = (const uint32_t*)info->stage->code;
+
+    for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
+        const uint32_t word = code[i];
+        const uint16_t opcode = word & 0xFFFF;
+        const uint16_t word_count = word >> 16;
+
+        if (opcode == LAHAR_SPV_OP_VARIABLE) {
+            const uint32_t var_type = code[i + 1];
+            const uint32_t var_id = code[i + 2];
+            const uint32_t var_storage_class = code[i + 3];
+
+            if (var_storage_class != LAHAR_SPV_STORAGE_CLASS_PUSH_CONSTANT) {
+                i += word_count;
+                continue;
+            }
+
+            LaharSPVTypeInfo* push_block_type = __lahar_spv_get_type(info, var_type);
+            if (!push_block_type) {
+                lahar_trace("Failed to find push block type");
+                return LAHAR_ERR_MALFORMED_CODE;
+            }
+
+            LaharShaderVarInfo* push_var = &vars[*var_count];
+            *var_count = *var_count + 1;
+
+            memset(push_var, 0, sizeof(*push_var));
+
+            push_var->storage_class = LAHAR_SVSC_PUSH_CONSTANT;
+            push_var->type = push_block_type->type;
+            push_var->size = push_block_type->size_bytes;
+            push_var->stages = info->stage->stage;
+
+            if (push_block_type->type == LAHAR_SVT_ARRAY) {
+                push_var->array_size = push_block_type->size_components;
+                push_var->stride = push_block_type->array_stride;
+            }
+
+            push_var->spv_type_id = var_type;
+            push_var->spv_var_id = var_id;
+
+            const char* name = __lahar_spv_v1_lookup_id_name(info, var_id);
+
+            if (name) {
+                push_var->path = lahar_temp_strdup(name);
+            }
+
+            if ((err = __lahar_spv_v1_extract_subvars(info, push_block_type, NULL, push_var, vars, var_count))) {
+                return err;
+            }
+
+            push_var->parent_var = UINT32_MAX;
+        }
+
+        i += word_count;
+    }
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+
+
+
+
+
+const char* __lahar_shader_stage_name(const LaharShaderStage* stage) {
+    const char* stage_name = "Unknown or mixed";
+
+    switch(stage->stage) {
+        case VK_SHADER_STAGE_VERTEX_BIT: stage_name = "vertex"; break;
+        case VK_SHADER_STAGE_FRAGMENT_BIT: stage_name = "fragment"; break;
+        case VK_SHADER_STAGE_GEOMETRY_BIT: stage_name = "geometry"; break;
+        case VK_SHADER_STAGE_COMPUTE_BIT: stage_name = "compute"; break;
+        case VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT: stage_name = "tesselation control"; break;
+        case VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT: stage_name = "tesselation evaluation"; break;
+        default: break;
+    }
+
+    return stage_name;
+}
+
+void __lahar_shader_introspection_print_recurse(const LaharShaderVarInfo* infos, uint32_t count, uint32_t index, uint32_t depth) {
+    const LaharShaderVarInfo* info = &infos[index];
+    const char* type_name = lahar_shader_var_type_string(info->type);
+
+    if (depth > 0) {
+        for (uint32_t i = 0; i < depth - 1; i++) {
+            printf("│  ");
+        }
+
+        printf("├─ ");
+    }
+
+    const char* var_name = "(unknown)";
+
+    if (info->path) {
+        const char* start = info->path;
+        const char* head = start;
+
+        while (*head) { head++; }
+        while(head != start && *head != '.') { head--; }
+
+        if (*head == '.') { head++; }
+
+        var_name = head;
+    }
+
+    printf("\033[1m%s\033[0m", var_name);
+
+    if (info->type == LAHAR_SVT_ARRAY) {
+        if (info->array_size == 0) {
+            printf("[]");
+        } else {
+            printf("[%d]", info->array_size);
+        }
+    }
+
+    printf(": \033[36m%s\033[0m", type_name + 10);
+
+    if (info->size > 0) {
+        printf(" \033[90m(%d bytes)\033[0m", info->size);
+    }
+
+    if (depth == 0) {
+        //printf("\n");
+        //for (uint32_t i = 0; i < depth; i++) { printf("│  "); }
+        //printf("  ");
+
+        switch (info->storage_class) {
+            case LAHAR_SVSC_UNIFORM_BUFFER:
+                printf(" \033[33m▸ UBO\033[0m @ Set %d, Binding %d", info->set, info->binding);
+                break;
+            case LAHAR_SVSC_STORAGE_BUFFER:
+                printf(" \033[33m▸ SSBO\033[0m @ Set %d, Binding %d", info->set, info->binding);
+                break;
+            case LAHAR_SVSC_INPUT:
+                printf(" \033[33m▸ Input\033[0m @ Location %d", info->location);
+                break;
+            case LAHAR_SVSC_PUSH_CONSTANT:
+                printf(" \033[33m▸ Push Constant\033[0m");
+                break;
+            case LAHAR_SVSC_UNIFORM_CONSTANT:
+                printf(" \033[33m▸ Uniform Constant\033[0m");
+                break;
+            default:
+                break;
+        }
+    } 
+    else {
+        const LaharShaderVarInfo* parent_var = info->parent_var != UINT32_MAX ? &infos[info->parent_var] : NULL;
+
+        if (parent_var == NULL || parent_var->type != LAHAR_SVT_ARRAY) {
+            printf(" \033[90m@ offset %d\033[0m", info->offset);
+        }
+    }
+
+    if (info->type == LAHAR_SVT_ARRAY && info->stride != 0) {
+        printf(" \033[90mstride %d\033[0m", info->stride);
+    }
+
+    printf("\n");
+
+    if (info->child_vars_begin != UINT32_MAX) {
+        for (uint32_t i = info->child_vars_begin; i < info->child_vars_end; i++) {
+            __lahar_shader_introspection_print_recurse(infos, count, i, depth + 1);
+        }
+    }
+
+    /* dunno if I like that or not */
+    if (depth == 0) {
+        printf("\n");
+    }
+
+}
+
+void lahar_shader_introspection_print(const LaharShaderVarInfo* infos, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) {
+        const LaharShaderVarInfo* info = &infos[i];
+
+        if (info->parent_var != UINT32_MAX) { continue; } // skip children, let the recurse print them
+
+        __lahar_shader_introspection_print_recurse(infos, count, i, 0);
+    }
+}
+
+uint32_t lahar_shader_introspect(
+    const LaharShaderStage* stages,
+    uint32_t num_stages,
+    uint32_t* num_infos,
+    LaharShaderVarInfo* infos
+) {
+    lahar_temp_mcheck();
+
+    uint32_t err = LAHAR_ERR_SUCCESS;
+
+    uint32_t produced_info_count = 0;
+    LaharSPVInfo* stage_infos = NULL;
+
+    uint32_t input_slot_count = 0;
+    uint32_t push_slot_count = 0;
+    
+    uint32_t descriptor_count = 0;
+    LaharSPVDescriptorSize* unique_descriptors = NULL;
+
+    uint32_t push_block_stage = UINT32_MAX;
+
+    uint32_t total_slots = 0;
+
+    for (uint32_t i = 0; i < num_stages; i++) {
+        const LaharShaderStage* stage = &stages[i];
+
+        if (stage->lang && strcmp(stage->lang, "spv") != 0 && strcmp(stage->lang, "spirv") != 0) {
+            lahar_trace("Shader stage was not SPIR-V");
+            err = LAHAR_ERR_UNKNOWN_LANGUAGE;
+            goto cleanup;
+        }
+    }
+
+    stage_infos = (LaharSPVInfo*)lahar_temp_alloc(sizeof(*stage_infos) * num_stages);
+
+    for (uint32_t i = 0; i < num_stages; i++) {
+        LaharSPVInfo* info = &stage_infos[i];
+        info->stage = &stages[i];
+
+        const LaharShaderStage* stage = &stages[i];
+        lahar_trace("Doing first pass of %s stage", __lahar_shader_stage_name(stage)); 
+
+        if (__lahar_shader_stage_validate_spv_header((const uint32_t*)stage->code) != LAHAR_ERR_SUCCESS) {
+            lahar_trace("Shader stage had invalid SPIR-V header");
+            err = LAHAR_ERR_MALFORMED_CODE;
+            goto cleanup;
+        }
+
+        if ((err = __lahar_spv_v1_build_section_offsets(info))) {
+            lahar_trace("Failed to build offset table");
+            goto cleanup;
+        }
+
+        if ((err =  __lahar_spv_v1_count_types(info))) {
+            lahar_trace("Failed to count types");
+            goto cleanup;
+        }
+
+        if ((err = __lahar_spv_v1_extract_types(info))) {
+            lahar_trace("Failed to extract types");
+            goto cleanup;
+        }
+    }
+
+
+    for (uint32_t i = 0; i < num_stages; i++) {
+        LaharSPVInfo* info = &stage_infos[i];
+        lahar_trace("Doing second pass of %s stage", __lahar_shader_stage_name(info->stage)); 
+
+        if (info->stage->stage & VK_SHADER_STAGE_VERTEX_BIT) {
+            __lahar_spv_v1_count_input_slots(info, &input_slot_count);
+        }
+
+        err = __lahar_spv_v1_count_unique_descriptor_slots(
+            info,
+            &descriptor_count,
+            &unique_descriptors
+        );
+
+        if (err) {
+            lahar_trace("Failed to count unique descriptor slots");
+            goto cleanup;
+        }
+
+        if (push_block_stage == UINT32_MAX) {
+            bool saw = false;
+
+            if ((err = __lahar_spv_v1_count_push_contant_slots(info, &push_slot_count, &saw))) {
+                lahar_trace("Failed to count push block slots");
+                goto cleanup;
+            }
+
+            if (saw) {
+                push_block_stage = i;
+            }
+        }
+    }
+
+    lahar_trace("Counted %u input slots, %u descriptors, push block slots: %u", input_slot_count, descriptor_count, push_slot_count);
+
+    total_slots = input_slot_count + push_slot_count;
+
+    for (uint32_t i = 0; i < descriptor_count; i++) {
+        lahar_trace("    Descriptor set %u binding %u, %u slots", unique_descriptors[i].set, unique_descriptors[i].binding, unique_descriptors[i].tree_size);
+        total_slots += unique_descriptors[i].tree_size;
+    }
+
+    if (!infos) {
+        *num_infos = total_slots;
+        goto cleanup;
+    }
+
+    // Do two separate loops to ENSURE
+    // that the inputs are first
+    for (uint32_t i = 0; i < num_stages; i++) {
+        LaharSPVInfo* info = &stage_infos[i];
+
+        if (info->stage->stage & VK_SHADER_STAGE_VERTEX_BIT) {
+            lahar_trace("Reading vertex inputs"); 
+            if ((err = __lahar_spv_v1_extract_inputs(info, infos, &produced_info_count))) {
+                lahar_trace("Failed to read inputs");
+                goto cleanup;
+            }
+
+            break;
+        }
+    }
+
+    for (uint32_t i = 0; i < num_stages; i++) {
+        LaharSPVInfo* info = &stage_infos[i];
+
+        if ((err = __lahar_spv_v1_extract_descriptors(info, infos, &produced_info_count))) {
+            lahar_trace("Failed to extract descriptors from %s stage", __lahar_shader_stage_name(info->stage)); 
+            goto cleanup;
+        }
+    }
+
+    if (push_block_stage != UINT32_MAX) {
+        LaharSPVInfo* info = &stage_infos[push_block_stage];
+
+        if ((err = __lahar_spv_v1_extract_push_block(info, infos, &produced_info_count))) {
+            lahar_trace("Failed to extract push descriptor block");
+            goto cleanup;
+        }
+    }
+
+    if (num_infos) {
+        *num_infos = produced_info_count;
+    }
+
+cleanup:
+    LAHAR_ASSERT(produced_info_count <= total_slots); // Very bad memory nono
+
+    lahar_temp_mpop();
+    return err;
+}
+
+
+const char* lahar_shader_var_type_string(LaharShaderVarType svt) {
+    switch (svt) {
+        default:
+        case LAHAR_SVT_UNKNOWN: return "LAHAR_SVT_UNKNOWN";
+        case LAHAR_SVT_VOID: return "LAHAR_SVT_VOID";
+        case LAHAR_SVT_BOOL: return "LAHAR_SVT_BOOL";
+        case LAHAR_SVT_INT: return "LAHAR_SVT_INT";
+        case LAHAR_SVT_UINT: return "LAHAR_SVT_UINT";
+        case LAHAR_SVT_FLOAT: return "LAHAR_SVT_FLOAT";
+        case LAHAR_SVT_DOUBLE: return "LAHAR_SVT_DOUBLE";
+        case LAHAR_SVT_BVEC2: return "LAHAR_SVT_BVEC2";
+        case LAHAR_SVT_BVEC3: return "LAHAR_SVT_BVEC3";
+        case LAHAR_SVT_BVEC4: return "LAHAR_SVT_BVEC4";
+        case LAHAR_SVT_IVEC2: return "LAHAR_SVT_IVEC2";
+        case LAHAR_SVT_IVEC3: return "LAHAR_SVT_IVEC3";
+        case LAHAR_SVT_IVEC4: return "LAHAR_SVT_IVEC4";
+        case LAHAR_SVT_UVEC2: return "LAHAR_SVT_UVEC2";
+        case LAHAR_SVT_UVEC3: return "LAHAR_SVT_UVEC3";
+        case LAHAR_SVT_UVEC4: return "LAHAR_SVT_UVEC4";
+        case LAHAR_SVT_DVEC2: return "LAHAR_SVT_DVEC2";
+        case LAHAR_SVT_DVEC3: return "LAHAR_SVT_DVEC3";
+        case LAHAR_SVT_DVEC4: return "LAHAR_SVT_DVEC4";
+        case LAHAR_SVT_VEC2: return "LAHAR_SVT_VEC2";
+        case LAHAR_SVT_VEC3: return "LAHAR_SVT_VEC3";
+        case LAHAR_SVT_VEC4: return "LAHAR_SVT_VEC4";
+        case LAHAR_SVT_MAT2X3: return "LAHAR_SVT_MAT2X3";
+        case LAHAR_SVT_MAT2X4: return "LAHAR_SVT_MAT2X4";
+        case LAHAR_SVT_MAT3X2: return "LAHAR_SVT_MAT3X2";
+        case LAHAR_SVT_MAT3X4: return "LAHAR_SVT_MAT3X4";
+        case LAHAR_SVT_MAT4X2: return "LAHAR_SVT_MAT4X2";
+        case LAHAR_SVT_MAT4X3: return "LAHAR_SVT_MAT4X3";
+        case LAHAR_SVT_MAT2: return "LAHAR_SVT_MAT2";
+        case LAHAR_SVT_MAT3: return "LAHAR_SVT_MAT3";
+        case LAHAR_SVT_MAT4: return "LAHAR_SVT_MAT4";
+        case LAHAR_SVT_DMAT2X3: return "LAHAR_SVT_DMAT2X3";
+        case LAHAR_SVT_DMAT2X4: return "LAHAR_SVT_DMAT2X4";
+        case LAHAR_SVT_DMAT3X2: return "LAHAR_SVT_DMAT3X2";
+        case LAHAR_SVT_DMAT3X4: return "LAHAR_SVT_DMAT3X4";
+        case LAHAR_SVT_DMAT4X2: return "LAHAR_SVT_DMAT4X2";
+        case LAHAR_SVT_DMAT4X3: return "LAHAR_SVT_DMAT4X3";
+        case LAHAR_SVT_DMAT2: return "LAHAR_SVT_DMAT2";
+        case LAHAR_SVT_DMAT3: return "LAHAR_SVT_DMAT3";
+        case LAHAR_SVT_DMAT4: return "LAHAR_SVT_DMAT4";
+        case LAHAR_SVT_SAMPLER: return "LAHAR_SVT_SAMPLER";
+        case LAHAR_SVT_IMAGE: return "LAHAR_SVT_IMAGE";
+        case LAHAR_SVT_SAMPLER_IMAGE: return "LAHAR_SVT_SAMPLER_IMAGE";
+        case LAHAR_SVT_STRUCT: return "LAHAR_SVT_STRUCT";
+        case LAHAR_SVT_ARRAY: return "LAHAR_SVT_ARRAY";
+        case LAHAR_SVT_POINTER: return "LAHAR_SVT_POINTER";
+    }
+}
+
+const char* lahar_vkformat_string(VkFormat format) {
+    switch (format) {
+        case VK_FORMAT_UNDEFINED: return "VK_FORMAT_UNDEFINED";
+        case VK_FORMAT_R4G4_UNORM_PACK8: return "VK_FORMAT_R4G4_UNORM_PACK8";
+        case VK_FORMAT_R4G4B4A4_UNORM_PACK16: return "VK_FORMAT_R4G4B4A4_UNORM_PACK16";
+        case VK_FORMAT_B4G4R4A4_UNORM_PACK16: return "VK_FORMAT_B4G4R4A4_UNORM_PACK16";
+        case VK_FORMAT_R5G6B5_UNORM_PACK16: return "VK_FORMAT_R5G6B5_UNORM_PACK16";
+        case VK_FORMAT_B5G6R5_UNORM_PACK16: return "VK_FORMAT_B5G6R5_UNORM_PACK16";
+        case VK_FORMAT_R5G5B5A1_UNORM_PACK16: return "VK_FORMAT_R5G5B5A1_UNORM_PACK16";
+        case VK_FORMAT_B5G5R5A1_UNORM_PACK16: return "VK_FORMAT_B5G5R5A1_UNORM_PACK16";
+        case VK_FORMAT_A1R5G5B5_UNORM_PACK16: return "VK_FORMAT_A1R5G5B5_UNORM_PACK16";
+        case VK_FORMAT_R8_UNORM: return "VK_FORMAT_R8_UNORM";
+        case VK_FORMAT_R8_SNORM: return "VK_FORMAT_R8_SNORM";
+        case VK_FORMAT_R8_USCALED: return "VK_FORMAT_R8_USCALED";
+        case VK_FORMAT_R8_SSCALED: return "VK_FORMAT_R8_SSCALED";
+        case VK_FORMAT_R8_UINT: return "VK_FORMAT_R8_UINT";
+        case VK_FORMAT_R8_SINT: return "VK_FORMAT_R8_SINT";
+        case VK_FORMAT_R8_SRGB: return "VK_FORMAT_R8_SRGB";
+        case VK_FORMAT_R8G8_UNORM: return "VK_FORMAT_R8G8_UNORM";
+        case VK_FORMAT_R8G8_SNORM: return "VK_FORMAT_R8G8_SNORM";
+        case VK_FORMAT_R8G8_USCALED: return "VK_FORMAT_R8G8_USCALED";
+        case VK_FORMAT_R8G8_SSCALED: return "VK_FORMAT_R8G8_SSCALED";
+        case VK_FORMAT_R8G8_UINT: return "VK_FORMAT_R8G8_UINT";
+        case VK_FORMAT_R8G8_SINT: return "VK_FORMAT_R8G8_SINT";
+        case VK_FORMAT_R8G8_SRGB: return "VK_FORMAT_R8G8_SRGB";
+        case VK_FORMAT_R8G8B8_UNORM: return "VK_FORMAT_R8G8B8_UNORM";
+        case VK_FORMAT_R8G8B8_SNORM: return "VK_FORMAT_R8G8B8_SNORM";
+        case VK_FORMAT_R8G8B8_USCALED: return "VK_FORMAT_R8G8B8_USCALED";
+        case VK_FORMAT_R8G8B8_SSCALED: return "VK_FORMAT_R8G8B8_SSCALED";
+        case VK_FORMAT_R8G8B8_UINT: return "VK_FORMAT_R8G8B8_UINT";
+        case VK_FORMAT_R8G8B8_SINT: return "VK_FORMAT_R8G8B8_SINT";
+        case VK_FORMAT_R8G8B8_SRGB: return "VK_FORMAT_R8G8B8_SRGB";
+        case VK_FORMAT_B8G8R8_UNORM: return "VK_FORMAT_B8G8R8_UNORM";
+        case VK_FORMAT_B8G8R8_SNORM: return "VK_FORMAT_B8G8R8_SNORM";
+        case VK_FORMAT_B8G8R8_USCALED: return "VK_FORMAT_B8G8R8_USCALED";
+        case VK_FORMAT_B8G8R8_SSCALED: return "VK_FORMAT_B8G8R8_SSCALED";
+        case VK_FORMAT_B8G8R8_UINT: return "VK_FORMAT_B8G8R8_UINT";
+        case VK_FORMAT_B8G8R8_SINT: return "VK_FORMAT_B8G8R8_SINT";
+        case VK_FORMAT_B8G8R8_SRGB: return "VK_FORMAT_B8G8R8_SRGB";
+        case VK_FORMAT_R8G8B8A8_UNORM: return "VK_FORMAT_R8G8B8A8_UNORM";
+        case VK_FORMAT_R8G8B8A8_SNORM: return "VK_FORMAT_R8G8B8A8_SNORM";
+        case VK_FORMAT_R8G8B8A8_USCALED: return "VK_FORMAT_R8G8B8A8_USCALED";
+        case VK_FORMAT_R8G8B8A8_SSCALED: return "VK_FORMAT_R8G8B8A8_SSCALED";
+        case VK_FORMAT_R8G8B8A8_UINT: return "VK_FORMAT_R8G8B8A8_UINT";
+        case VK_FORMAT_R8G8B8A8_SINT: return "VK_FORMAT_R8G8B8A8_SINT";
+        case VK_FORMAT_R8G8B8A8_SRGB: return "VK_FORMAT_R8G8B8A8_SRGB";
+        case VK_FORMAT_B8G8R8A8_UNORM: return "VK_FORMAT_B8G8R8A8_UNORM";
+        case VK_FORMAT_B8G8R8A8_SNORM: return "VK_FORMAT_B8G8R8A8_SNORM";
+        case VK_FORMAT_B8G8R8A8_USCALED: return "VK_FORMAT_B8G8R8A8_USCALED";
+        case VK_FORMAT_B8G8R8A8_SSCALED: return "VK_FORMAT_B8G8R8A8_SSCALED";
+        case VK_FORMAT_B8G8R8A8_UINT: return "VK_FORMAT_B8G8R8A8_UINT";
+        case VK_FORMAT_B8G8R8A8_SINT: return "VK_FORMAT_B8G8R8A8_SINT";
+        case VK_FORMAT_B8G8R8A8_SRGB: return "VK_FORMAT_B8G8R8A8_SRGB";
+        case VK_FORMAT_A8B8G8R8_UNORM_PACK32: return "VK_FORMAT_A8B8G8R8_UNORM_PACK32";
+        case VK_FORMAT_A8B8G8R8_SNORM_PACK32: return "VK_FORMAT_A8B8G8R8_SNORM_PACK32";
+        case VK_FORMAT_A8B8G8R8_USCALED_PACK32: return "VK_FORMAT_A8B8G8R8_USCALED_PACK32";
+        case VK_FORMAT_A8B8G8R8_SSCALED_PACK32: return "VK_FORMAT_A8B8G8R8_SSCALED_PACK32";
+        case VK_FORMAT_A8B8G8R8_UINT_PACK32: return "VK_FORMAT_A8B8G8R8_UINT_PACK32";
+        case VK_FORMAT_A8B8G8R8_SINT_PACK32: return "VK_FORMAT_A8B8G8R8_SINT_PACK32";
+        case VK_FORMAT_A8B8G8R8_SRGB_PACK32: return "VK_FORMAT_A8B8G8R8_SRGB_PACK32";
+        case VK_FORMAT_A2R10G10B10_UNORM_PACK32: return "VK_FORMAT_A2R10G10B10_UNORM_PACK32";
+        case VK_FORMAT_A2R10G10B10_SNORM_PACK32: return "VK_FORMAT_A2R10G10B10_SNORM_PACK32";
+        case VK_FORMAT_A2R10G10B10_USCALED_PACK32: return "VK_FORMAT_A2R10G10B10_USCALED_PACK32";
+        case VK_FORMAT_A2R10G10B10_SSCALED_PACK32: return "VK_FORMAT_A2R10G10B10_SSCALED_PACK32";
+        case VK_FORMAT_A2R10G10B10_UINT_PACK32: return "VK_FORMAT_A2R10G10B10_UINT_PACK32";
+        case VK_FORMAT_A2R10G10B10_SINT_PACK32: return "VK_FORMAT_A2R10G10B10_SINT_PACK32";
+        case VK_FORMAT_A2B10G10R10_UNORM_PACK32: return "VK_FORMAT_A2B10G10R10_UNORM_PACK32";
+        case VK_FORMAT_A2B10G10R10_SNORM_PACK32: return "VK_FORMAT_A2B10G10R10_SNORM_PACK32";
+        case VK_FORMAT_A2B10G10R10_USCALED_PACK32: return "VK_FORMAT_A2B10G10R10_USCALED_PACK32";
+        case VK_FORMAT_A2B10G10R10_SSCALED_PACK32: return "VK_FORMAT_A2B10G10R10_SSCALED_PACK32";
+        case VK_FORMAT_A2B10G10R10_UINT_PACK32: return "VK_FORMAT_A2B10G10R10_UINT_PACK32";
+        case VK_FORMAT_A2B10G10R10_SINT_PACK32: return "VK_FORMAT_A2B10G10R10_SINT_PACK32";
+        case VK_FORMAT_R16_UNORM: return "VK_FORMAT_R16_UNORM";
+        case VK_FORMAT_R16_SNORM: return "VK_FORMAT_R16_SNORM";
+        case VK_FORMAT_R16_USCALED: return "VK_FORMAT_R16_USCALED";
+        case VK_FORMAT_R16_SSCALED: return "VK_FORMAT_R16_SSCALED";
+        case VK_FORMAT_R16_UINT: return "VK_FORMAT_R16_UINT";
+        case VK_FORMAT_R16_SINT: return "VK_FORMAT_R16_SINT";
+        case VK_FORMAT_R16_SFLOAT: return "VK_FORMAT_R16_SFLOAT";
+        case VK_FORMAT_R16G16_UNORM: return "VK_FORMAT_R16G16_UNORM";
+        case VK_FORMAT_R16G16_SNORM: return "VK_FORMAT_R16G16_SNORM";
+        case VK_FORMAT_R16G16_USCALED: return "VK_FORMAT_R16G16_USCALED";
+        case VK_FORMAT_R16G16_SSCALED: return "VK_FORMAT_R16G16_SSCALED";
+        case VK_FORMAT_R16G16_UINT: return "VK_FORMAT_R16G16_UINT";
+        case VK_FORMAT_R16G16_SINT: return "VK_FORMAT_R16G16_SINT";
+        case VK_FORMAT_R16G16_SFLOAT: return "VK_FORMAT_R16G16_SFLOAT";
+        case VK_FORMAT_R16G16B16_UNORM: return "VK_FORMAT_R16G16B16_UNORM";
+        case VK_FORMAT_R16G16B16_SNORM: return "VK_FORMAT_R16G16B16_SNORM";
+        case VK_FORMAT_R16G16B16_USCALED: return "VK_FORMAT_R16G16B16_USCALED";
+        case VK_FORMAT_R16G16B16_SSCALED: return "VK_FORMAT_R16G16B16_SSCALED";
+        case VK_FORMAT_R16G16B16_UINT: return "VK_FORMAT_R16G16B16_UINT";
+        case VK_FORMAT_R16G16B16_SINT: return "VK_FORMAT_R16G16B16_SINT";
+        case VK_FORMAT_R16G16B16_SFLOAT: return "VK_FORMAT_R16G16B16_SFLOAT";
+        case VK_FORMAT_R16G16B16A16_UNORM: return "VK_FORMAT_R16G16B16A16_UNORM";
+        case VK_FORMAT_R16G16B16A16_SNORM: return "VK_FORMAT_R16G16B16A16_SNORM";
+        case VK_FORMAT_R16G16B16A16_USCALED: return "VK_FORMAT_R16G16B16A16_USCALED";
+        case VK_FORMAT_R16G16B16A16_SSCALED: return "VK_FORMAT_R16G16B16A16_SSCALED";
+        case VK_FORMAT_R16G16B16A16_UINT: return "VK_FORMAT_R16G16B16A16_UINT";
+        case VK_FORMAT_R16G16B16A16_SINT: return "VK_FORMAT_R16G16B16A16_SINT";
+        case VK_FORMAT_R16G16B16A16_SFLOAT: return "VK_FORMAT_R16G16B16A16_SFLOAT";
+        case VK_FORMAT_R32_UINT: return "VK_FORMAT_R32_UINT";
+        case VK_FORMAT_R32_SINT: return "VK_FORMAT_R32_SINT";
+        case VK_FORMAT_R32_SFLOAT: return "VK_FORMAT_R32_SFLOAT";
+        case VK_FORMAT_R32G32_UINT: return "VK_FORMAT_R32G32_UINT";
+        case VK_FORMAT_R32G32_SINT: return "VK_FORMAT_R32G32_SINT";
+        case VK_FORMAT_R32G32_SFLOAT: return "VK_FORMAT_R32G32_SFLOAT";
+        case VK_FORMAT_R32G32B32_UINT: return "VK_FORMAT_R32G32B32_UINT";
+        case VK_FORMAT_R32G32B32_SINT: return "VK_FORMAT_R32G32B32_SINT";
+        case VK_FORMAT_R32G32B32_SFLOAT: return "VK_FORMAT_R32G32B32_SFLOAT";
+        case VK_FORMAT_R32G32B32A32_UINT: return "VK_FORMAT_R32G32B32A32_UINT";
+        case VK_FORMAT_R32G32B32A32_SINT: return "VK_FORMAT_R32G32B32A32_SINT";
+        case VK_FORMAT_R32G32B32A32_SFLOAT: return "VK_FORMAT_R32G32B32A32_SFLOAT";
+        case VK_FORMAT_R64_UINT: return "VK_FORMAT_R64_UINT";
+        case VK_FORMAT_R64_SINT: return "VK_FORMAT_R64_SINT";
+        case VK_FORMAT_R64_SFLOAT: return "VK_FORMAT_R64_SFLOAT";
+        case VK_FORMAT_R64G64_UINT: return "VK_FORMAT_R64G64_UINT";
+        case VK_FORMAT_R64G64_SINT: return "VK_FORMAT_R64G64_SINT";
+        case VK_FORMAT_R64G64_SFLOAT: return "VK_FORMAT_R64G64_SFLOAT";
+        case VK_FORMAT_R64G64B64_UINT: return "VK_FORMAT_R64G64B64_UINT";
+        case VK_FORMAT_R64G64B64_SINT: return "VK_FORMAT_R64G64B64_SINT";
+        case VK_FORMAT_R64G64B64_SFLOAT: return "VK_FORMAT_R64G64B64_SFLOAT";
+        case VK_FORMAT_R64G64B64A64_UINT: return "VK_FORMAT_R64G64B64A64_UINT";
+        case VK_FORMAT_R64G64B64A64_SINT: return "VK_FORMAT_R64G64B64A64_SINT";
+        case VK_FORMAT_R64G64B64A64_SFLOAT: return "VK_FORMAT_R64G64B64A64_SFLOAT";
+        case VK_FORMAT_B10G11R11_UFLOAT_PACK32: return "VK_FORMAT_B10G11R11_UFLOAT_PACK32";
+        case VK_FORMAT_E5B9G9R9_UFLOAT_PACK32: return "VK_FORMAT_E5B9G9R9_UFLOAT_PACK32";
+        case VK_FORMAT_D16_UNORM: return "VK_FORMAT_D16_UNORM";
+        case VK_FORMAT_X8_D24_UNORM_PACK32: return "VK_FORMAT_X8_D24_UNORM_PACK32";
+        case VK_FORMAT_D32_SFLOAT: return "VK_FORMAT_D32_SFLOAT";
+        case VK_FORMAT_S8_UINT: return "VK_FORMAT_S8_UINT";
+        case VK_FORMAT_D16_UNORM_S8_UINT: return "VK_FORMAT_D16_UNORM_S8_UINT";
+        case VK_FORMAT_D24_UNORM_S8_UINT: return "VK_FORMAT_D24_UNORM_S8_UINT";
+        case VK_FORMAT_D32_SFLOAT_S8_UINT: return "VK_FORMAT_D32_SFLOAT_S8_UINT";
+        case VK_FORMAT_BC1_RGB_UNORM_BLOCK: return "VK_FORMAT_BC1_RGB_UNORM_BLOCK";
+        case VK_FORMAT_BC1_RGB_SRGB_BLOCK: return "VK_FORMAT_BC1_RGB_SRGB_BLOCK";
+        case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: return "VK_FORMAT_BC1_RGBA_UNORM_BLOCK";
+        case VK_FORMAT_BC1_RGBA_SRGB_BLOCK: return "VK_FORMAT_BC1_RGBA_SRGB_BLOCK";
+        case VK_FORMAT_BC2_UNORM_BLOCK: return "VK_FORMAT_BC2_UNORM_BLOCK";
+        case VK_FORMAT_BC2_SRGB_BLOCK: return "VK_FORMAT_BC2_SRGB_BLOCK";
+        case VK_FORMAT_BC3_UNORM_BLOCK: return "VK_FORMAT_BC3_UNORM_BLOCK";
+        case VK_FORMAT_BC3_SRGB_BLOCK: return "VK_FORMAT_BC3_SRGB_BLOCK";
+        case VK_FORMAT_BC4_UNORM_BLOCK: return "VK_FORMAT_BC4_UNORM_BLOCK";
+        case VK_FORMAT_BC4_SNORM_BLOCK: return "VK_FORMAT_BC4_SNORM_BLOCK";
+        case VK_FORMAT_BC5_UNORM_BLOCK: return "VK_FORMAT_BC5_UNORM_BLOCK";
+        case VK_FORMAT_BC5_SNORM_BLOCK: return "VK_FORMAT_BC5_SNORM_BLOCK";
+        case VK_FORMAT_BC6H_UFLOAT_BLOCK: return "VK_FORMAT_BC6H_UFLOAT_BLOCK";
+        case VK_FORMAT_BC6H_SFLOAT_BLOCK: return "VK_FORMAT_BC6H_SFLOAT_BLOCK";
+        case VK_FORMAT_BC7_UNORM_BLOCK: return "VK_FORMAT_BC7_UNORM_BLOCK";
+        case VK_FORMAT_BC7_SRGB_BLOCK: return "VK_FORMAT_BC7_SRGB_BLOCK";
+        case VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK: return "VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK";
+        case VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK: return "VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK";
+        case VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK: return "VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK";
+        case VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK: return "VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK";
+        case VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK: return "VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK";
+        case VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK: return "VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK";
+        case VK_FORMAT_EAC_R11_UNORM_BLOCK: return "VK_FORMAT_EAC_R11_UNORM_BLOCK";
+        case VK_FORMAT_EAC_R11_SNORM_BLOCK: return "VK_FORMAT_EAC_R11_SNORM_BLOCK";
+        case VK_FORMAT_EAC_R11G11_UNORM_BLOCK: return "VK_FORMAT_EAC_R11G11_UNORM_BLOCK";
+        case VK_FORMAT_EAC_R11G11_SNORM_BLOCK: return "VK_FORMAT_EAC_R11G11_SNORM_BLOCK";
+        case VK_FORMAT_ASTC_4x4_UNORM_BLOCK: return "VK_FORMAT_ASTC_4x4_UNORM_BLOCK";
+        case VK_FORMAT_ASTC_4x4_SRGB_BLOCK: return "VK_FORMAT_ASTC_4x4_SRGB_BLOCK";
+        case VK_FORMAT_ASTC_5x4_UNORM_BLOCK: return "VK_FORMAT_ASTC_5x4_UNORM_BLOCK";
+        case VK_FORMAT_ASTC_5x4_SRGB_BLOCK: return "VK_FORMAT_ASTC_5x4_SRGB_BLOCK";
+        case VK_FORMAT_ASTC_5x5_UNORM_BLOCK: return "VK_FORMAT_ASTC_5x5_UNORM_BLOCK";
+        case VK_FORMAT_ASTC_5x5_SRGB_BLOCK: return "VK_FORMAT_ASTC_5x5_SRGB_BLOCK";
+        case VK_FORMAT_ASTC_6x5_UNORM_BLOCK: return "VK_FORMAT_ASTC_6x5_UNORM_BLOCK";
+        case VK_FORMAT_ASTC_6x5_SRGB_BLOCK: return "VK_FORMAT_ASTC_6x5_SRGB_BLOCK";
+        case VK_FORMAT_ASTC_6x6_UNORM_BLOCK: return "VK_FORMAT_ASTC_6x6_UNORM_BLOCK";
+        case VK_FORMAT_ASTC_6x6_SRGB_BLOCK: return "VK_FORMAT_ASTC_6x6_SRGB_BLOCK";
+        case VK_FORMAT_ASTC_8x5_UNORM_BLOCK: return "VK_FORMAT_ASTC_8x5_UNORM_BLOCK";
+        case VK_FORMAT_ASTC_8x5_SRGB_BLOCK: return "VK_FORMAT_ASTC_8x5_SRGB_BLOCK";
+        case VK_FORMAT_ASTC_8x6_UNORM_BLOCK: return "VK_FORMAT_ASTC_8x6_UNORM_BLOCK";
+        case VK_FORMAT_ASTC_8x6_SRGB_BLOCK: return "VK_FORMAT_ASTC_8x6_SRGB_BLOCK";
+        case VK_FORMAT_ASTC_8x8_UNORM_BLOCK: return "VK_FORMAT_ASTC_8x8_UNORM_BLOCK";
+        case VK_FORMAT_ASTC_8x8_SRGB_BLOCK: return "VK_FORMAT_ASTC_8x8_SRGB_BLOCK";
+        case VK_FORMAT_ASTC_10x5_UNORM_BLOCK: return "VK_FORMAT_ASTC_10x5_UNORM_BLOCK";
+        case VK_FORMAT_ASTC_10x5_SRGB_BLOCK: return "VK_FORMAT_ASTC_10x5_SRGB_BLOCK";
+        case VK_FORMAT_ASTC_10x6_UNORM_BLOCK: return "VK_FORMAT_ASTC_10x6_UNORM_BLOCK";
+        case VK_FORMAT_ASTC_10x6_SRGB_BLOCK: return "VK_FORMAT_ASTC_10x6_SRGB_BLOCK";
+        case VK_FORMAT_ASTC_10x8_UNORM_BLOCK: return "VK_FORMAT_ASTC_10x8_UNORM_BLOCK";
+        case VK_FORMAT_ASTC_10x8_SRGB_BLOCK: return "VK_FORMAT_ASTC_10x8_SRGB_BLOCK";
+        case VK_FORMAT_ASTC_10x10_UNORM_BLOCK: return "VK_FORMAT_ASTC_10x10_UNORM_BLOCK";
+        case VK_FORMAT_ASTC_10x10_SRGB_BLOCK: return "VK_FORMAT_ASTC_10x10_SRGB_BLOCK";
+        case VK_FORMAT_ASTC_12x10_UNORM_BLOCK: return "VK_FORMAT_ASTC_12x10_UNORM_BLOCK";
+        case VK_FORMAT_ASTC_12x10_SRGB_BLOCK: return "VK_FORMAT_ASTC_12x10_SRGB_BLOCK";
+        case VK_FORMAT_ASTC_12x12_UNORM_BLOCK: return "VK_FORMAT_ASTC_12x12_UNORM_BLOCK";
+        case VK_FORMAT_ASTC_12x12_SRGB_BLOCK: return "VK_FORMAT_ASTC_12x12_SRGB_BLOCK";
+        case VK_FORMAT_G8B8G8R8_422_UNORM: return "VK_FORMAT_G8B8G8R8_422_UNORM";
+        case VK_FORMAT_B8G8R8G8_422_UNORM: return "VK_FORMAT_B8G8R8G8_422_UNORM";
+        case VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM: return "VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM";
+        case VK_FORMAT_G8_B8R8_2PLANE_420_UNORM: return "VK_FORMAT_G8_B8R8_2PLANE_420_UNORM";
+        case VK_FORMAT_G8_B8_R8_3PLANE_422_UNORM: return "VK_FORMAT_G8_B8_R8_3PLANE_422_UNORM";
+        case VK_FORMAT_G8_B8R8_2PLANE_422_UNORM: return "VK_FORMAT_G8_B8R8_2PLANE_422_UNORM";
+        case VK_FORMAT_G8_B8_R8_3PLANE_444_UNORM: return "VK_FORMAT_G8_B8_R8_3PLANE_444_UNORM";
+        case VK_FORMAT_R10X6_UNORM_PACK16: return "VK_FORMAT_R10X6_UNORM_PACK16";
+        case VK_FORMAT_R10X6G10X6_UNORM_2PACK16: return "VK_FORMAT_R10X6G10X6_UNORM_2PACK16";
+        case VK_FORMAT_R10X6G10X6B10X6A10X6_UNORM_4PACK16: return "VK_FORMAT_R10X6G10X6B10X6A10X6_UNORM_4PACK16";
+        case VK_FORMAT_G10X6B10X6G10X6R10X6_422_UNORM_4PACK16: return "VK_FORMAT_G10X6B10X6G10X6R10X6_422_UNORM_4PACK16";
+        case VK_FORMAT_B10X6G10X6R10X6G10X6_422_UNORM_4PACK16: return "VK_FORMAT_B10X6G10X6R10X6G10X6_422_UNORM_4PACK16";
+        case VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_420_UNORM_3PACK16: return "VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_420_UNORM_3PACK16";
+        case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16: return "VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16";
+        case VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_422_UNORM_3PACK16: return "VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_422_UNORM_3PACK16";
+        case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_422_UNORM_3PACK16: return "VK_FORMAT_G10X6_B10X6R10X6_2PLANE_422_UNORM_3PACK16";
+        case VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_444_UNORM_3PACK16: return "VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_444_UNORM_3PACK16";
+        case VK_FORMAT_R12X4_UNORM_PACK16: return "VK_FORMAT_R12X4_UNORM_PACK16";
+        case VK_FORMAT_R12X4G12X4_UNORM_2PACK16: return "VK_FORMAT_R12X4G12X4_UNORM_2PACK16";
+        case VK_FORMAT_R12X4G12X4B12X4A12X4_UNORM_4PACK16: return "VK_FORMAT_R12X4G12X4B12X4A12X4_UNORM_4PACK16";
+        case VK_FORMAT_G12X4B12X4G12X4R12X4_422_UNORM_4PACK16: return "VK_FORMAT_G12X4B12X4G12X4R12X4_422_UNORM_4PACK16";
+        case VK_FORMAT_B12X4G12X4R12X4G12X4_422_UNORM_4PACK16: return "VK_FORMAT_B12X4G12X4R12X4G12X4_422_UNORM_4PACK16";
+        case VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_420_UNORM_3PACK16: return "VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_420_UNORM_3PACK16";
+        case VK_FORMAT_G12X4_B12X4R12X4_2PLANE_420_UNORM_3PACK16: return "VK_FORMAT_G12X4_B12X4R12X4_2PLANE_420_UNORM_3PACK16";
+        case VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_422_UNORM_3PACK16: return "VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_422_UNORM_3PACK16";
+        case VK_FORMAT_G12X4_B12X4R12X4_2PLANE_422_UNORM_3PACK16: return "VK_FORMAT_G12X4_B12X4R12X4_2PLANE_422_UNORM_3PACK16";
+        case VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_444_UNORM_3PACK16: return "VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_444_UNORM_3PACK16";
+        case VK_FORMAT_G16B16G16R16_422_UNORM: return "VK_FORMAT_G16B16G16R16_422_UNORM";
+        case VK_FORMAT_B16G16R16G16_422_UNORM: return "VK_FORMAT_B16G16R16G16_422_UNORM";
+        case VK_FORMAT_G16_B16_R16_3PLANE_420_UNORM: return "VK_FORMAT_G16_B16_R16_3PLANE_420_UNORM";
+        case VK_FORMAT_G16_B16R16_2PLANE_420_UNORM: return "VK_FORMAT_G16_B16R16_2PLANE_420_UNORM";
+        case VK_FORMAT_G16_B16_R16_3PLANE_422_UNORM: return "VK_FORMAT_G16_B16_R16_3PLANE_422_UNORM";
+        case VK_FORMAT_G16_B16R16_2PLANE_422_UNORM: return "VK_FORMAT_G16_B16R16_2PLANE_422_UNORM";
+        case VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM: return "VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM";
+        case VK_FORMAT_G8_B8R8_2PLANE_444_UNORM: return "VK_FORMAT_G8_B8R8_2PLANE_444_UNORM";
+        case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_444_UNORM_3PACK16: return "VK_FORMAT_G10X6_B10X6R10X6_2PLANE_444_UNORM_3PACK16";
+        case VK_FORMAT_G12X4_B12X4R12X4_2PLANE_444_UNORM_3PACK16: return "VK_FORMAT_G12X4_B12X4R12X4_2PLANE_444_UNORM_3PACK16";
+        case VK_FORMAT_G16_B16R16_2PLANE_444_UNORM: return "VK_FORMAT_G16_B16R16_2PLANE_444_UNORM";
+        case VK_FORMAT_A4R4G4B4_UNORM_PACK16: return "VK_FORMAT_A4R4G4B4_UNORM_PACK16";
+        case VK_FORMAT_A4B4G4R4_UNORM_PACK16: return "VK_FORMAT_A4B4G4R4_UNORM_PACK16";
+        case VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK: return "VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK";
+        case VK_FORMAT_ASTC_5x4_SFLOAT_BLOCK: return "VK_FORMAT_ASTC_5x4_SFLOAT_BLOCK";
+        case VK_FORMAT_ASTC_5x5_SFLOAT_BLOCK: return "VK_FORMAT_ASTC_5x5_SFLOAT_BLOCK";
+        case VK_FORMAT_ASTC_6x5_SFLOAT_BLOCK: return "VK_FORMAT_ASTC_6x5_SFLOAT_BLOCK";
+        case VK_FORMAT_ASTC_6x6_SFLOAT_BLOCK: return "VK_FORMAT_ASTC_6x6_SFLOAT_BLOCK";
+        case VK_FORMAT_ASTC_8x5_SFLOAT_BLOCK: return "VK_FORMAT_ASTC_8x5_SFLOAT_BLOCK";
+        case VK_FORMAT_ASTC_8x6_SFLOAT_BLOCK: return "VK_FORMAT_ASTC_8x6_SFLOAT_BLOCK";
+        case VK_FORMAT_ASTC_8x8_SFLOAT_BLOCK: return "VK_FORMAT_ASTC_8x8_SFLOAT_BLOCK";
+        case VK_FORMAT_ASTC_10x5_SFLOAT_BLOCK: return "VK_FORMAT_ASTC_10x5_SFLOAT_BLOCK";
+        case VK_FORMAT_ASTC_10x6_SFLOAT_BLOCK: return "VK_FORMAT_ASTC_10x6_SFLOAT_BLOCK";
+        case VK_FORMAT_ASTC_10x8_SFLOAT_BLOCK: return "VK_FORMAT_ASTC_10x8_SFLOAT_BLOCK";
+        case VK_FORMAT_ASTC_10x10_SFLOAT_BLOCK: return "VK_FORMAT_ASTC_10x10_SFLOAT_BLOCK";
+        case VK_FORMAT_ASTC_12x10_SFLOAT_BLOCK: return "VK_FORMAT_ASTC_12x10_SFLOAT_BLOCK";
+        case VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK: return "VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK";
+        case VK_FORMAT_A1B5G5R5_UNORM_PACK16: return "VK_FORMAT_A1B5G5R5_UNORM_PACK16";
+        case VK_FORMAT_A8_UNORM: return "VK_FORMAT_A8_UNORM";
+        case VK_FORMAT_PVRTC1_2BPP_UNORM_BLOCK_IMG: return "VK_FORMAT_PVRTC1_2BPP_UNORM_BLOCK_IMG";
+        case VK_FORMAT_PVRTC1_4BPP_UNORM_BLOCK_IMG: return "VK_FORMAT_PVRTC1_4BPP_UNORM_BLOCK_IMG";
+        case VK_FORMAT_PVRTC2_2BPP_UNORM_BLOCK_IMG: return "VK_FORMAT_PVRTC2_2BPP_UNORM_BLOCK_IMG";
+        case VK_FORMAT_PVRTC2_4BPP_UNORM_BLOCK_IMG: return "VK_FORMAT_PVRTC2_4BPP_UNORM_BLOCK_IMG";
+        case VK_FORMAT_PVRTC1_2BPP_SRGB_BLOCK_IMG: return "VK_FORMAT_PVRTC1_2BPP_SRGB_BLOCK_IMG";
+        case VK_FORMAT_PVRTC1_4BPP_SRGB_BLOCK_IMG: return "VK_FORMAT_PVRTC1_4BPP_SRGB_BLOCK_IMG";
+        case VK_FORMAT_PVRTC2_2BPP_SRGB_BLOCK_IMG: return "VK_FORMAT_PVRTC2_2BPP_SRGB_BLOCK_IMG";
+        case VK_FORMAT_PVRTC2_4BPP_SRGB_BLOCK_IMG: return "VK_FORMAT_PVRTC2_4BPP_SRGB_BLOCK_IMG";
+        case VK_FORMAT_R8_BOOL_ARM: return "VK_FORMAT_R8_BOOL_ARM";
+        case VK_FORMAT_R16G16_SFIXED5_NV: return "VK_FORMAT_R16G16_SFIXED5_NV";
+        case VK_FORMAT_R10X6_UINT_PACK16_ARM: return "VK_FORMAT_R10X6_UINT_PACK16_ARM";
+        case VK_FORMAT_R10X6G10X6_UINT_2PACK16_ARM: return "VK_FORMAT_R10X6G10X6_UINT_2PACK16_ARM";
+        case VK_FORMAT_R10X6G10X6B10X6A10X6_UINT_4PACK16_ARM: return "VK_FORMAT_R10X6G10X6B10X6A10X6_UINT_4PACK16_ARM";
+        case VK_FORMAT_R12X4_UINT_PACK16_ARM: return "VK_FORMAT_R12X4_UINT_PACK16_ARM";
+        case VK_FORMAT_R12X4G12X4_UINT_2PACK16_ARM: return "VK_FORMAT_R12X4G12X4_UINT_2PACK16_ARM";
+        case VK_FORMAT_R12X4G12X4B12X4A12X4_UINT_4PACK16_ARM: return "VK_FORMAT_R12X4G12X4B12X4A12X4_UINT_4PACK16_ARM";
+        case VK_FORMAT_R14X2_UINT_PACK16_ARM: return "VK_FORMAT_R14X2_UINT_PACK16_ARM";
+        case VK_FORMAT_R14X2G14X2_UINT_2PACK16_ARM: return "VK_FORMAT_R14X2G14X2_UINT_2PACK16_ARM";
+        case VK_FORMAT_R14X2G14X2B14X2A14X2_UINT_4PACK16_ARM: return "VK_FORMAT_R14X2G14X2B14X2A14X2_UINT_4PACK16_ARM";
+        case VK_FORMAT_R14X2_UNORM_PACK16_ARM: return "VK_FORMAT_R14X2_UNORM_PACK16_ARM";
+        case VK_FORMAT_R14X2G14X2_UNORM_2PACK16_ARM: return "VK_FORMAT_R14X2G14X2_UNORM_2PACK16_ARM";
+        case VK_FORMAT_R14X2G14X2B14X2A14X2_UNORM_4PACK16_ARM: return "VK_FORMAT_R14X2G14X2B14X2A14X2_UNORM_4PACK16_ARM";
+        case VK_FORMAT_G14X2_B14X2R14X2_2PLANE_420_UNORM_3PACK16_ARM: return "VK_FORMAT_G14X2_B14X2R14X2_2PLANE_420_UNORM_3PACK16_ARM";
+        case VK_FORMAT_G14X2_B14X2R14X2_2PLANE_422_UNORM_3PACK16_ARM: return "VK_FORMAT_G14X2_B14X2R14X2_2PLANE_422_UNORM_3PACK16_ARM";
+        /* These all complain about duplicates
+        case VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK_EXT";
+        case VK_FORMAT_ASTC_5x4_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_5x4_SFLOAT_BLOCK_EXT";
+        case VK_FORMAT_ASTC_5x5_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_5x5_SFLOAT_BLOCK_EXT";
+        case VK_FORMAT_ASTC_6x5_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_6x5_SFLOAT_BLOCK_EXT";
+        case VK_FORMAT_ASTC_6x6_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_6x6_SFLOAT_BLOCK_EXT";
+        case VK_FORMAT_ASTC_8x5_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_8x5_SFLOAT_BLOCK_EXT";
+        case VK_FORMAT_ASTC_8x6_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_8x6_SFLOAT_BLOCK_EXT";
+        case VK_FORMAT_ASTC_8x8_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_8x8_SFLOAT_BLOCK_EXT";
+        case VK_FORMAT_ASTC_10x5_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_10x5_SFLOAT_BLOCK_EXT";
+        case VK_FORMAT_ASTC_10x6_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_10x6_SFLOAT_BLOCK_EXT";
+        case VK_FORMAT_ASTC_10x8_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_10x8_SFLOAT_BLOCK_EXT";
+        case VK_FORMAT_ASTC_10x10_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_10x10_SFLOAT_BLOCK_EXT";
+        case VK_FORMAT_ASTC_12x10_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_12x10_SFLOAT_BLOCK_EXT";
+        case VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK_EXT";
+        case VK_FORMAT_G8B8G8R8_422_UNORM_KHR: return "VK_FORMAT_G8B8G8R8_422_UNORM_KHR";
+        case VK_FORMAT_B8G8R8G8_422_UNORM_KHR: return "VK_FORMAT_B8G8R8G8_422_UNORM_KHR";
+        case VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM_KHR: return "VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM_KHR";
+        case VK_FORMAT_G8_B8R8_2PLANE_420_UNORM_KHR: return "VK_FORMAT_G8_B8R8_2PLANE_420_UNORM_KHR";
+        case VK_FORMAT_G8_B8_R8_3PLANE_422_UNORM_KHR: return "VK_FORMAT_G8_B8_R8_3PLANE_422_UNORM_KHR";
+        case VK_FORMAT_G8_B8R8_2PLANE_422_UNORM_KHR: return "VK_FORMAT_G8_B8R8_2PLANE_422_UNORM_KHR";
+        case VK_FORMAT_G8_B8_R8_3PLANE_444_UNORM_KHR: return "VK_FORMAT_G8_B8_R8_3PLANE_444_UNORM_KHR";
+        case VK_FORMAT_R10X6_UNORM_PACK16_KHR: return "VK_FORMAT_R10X6_UNORM_PACK16_KHR";
+        case VK_FORMAT_R10X6G10X6_UNORM_2PACK16_KHR: return "VK_FORMAT_R10X6G10X6_UNORM_2PACK16_KHR";
+        case VK_FORMAT_R10X6G10X6B10X6A10X6_UNORM_4PACK16_KHR: return "VK_FORMAT_R10X6G10X6B10X6A10X6_UNORM_4PACK16_KHR";
+        case VK_FORMAT_G10X6B10X6G10X6R10X6_422_UNORM_4PACK16_KHR: return "VK_FORMAT_G10X6B10X6G10X6R10X6_422_UNORM_4PACK16_KHR";
+        case VK_FORMAT_B10X6G10X6R10X6G10X6_422_UNORM_4PACK16_KHR: return "VK_FORMAT_B10X6G10X6R10X6G10X6_422_UNORM_4PACK16_KHR";
+        case VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_420_UNORM_3PACK16_KHR: return "VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_420_UNORM_3PACK16_KHR";
+        case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16_KHR: return "VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16_KHR";
+        case VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_422_UNORM_3PACK16_KHR: return "VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_422_UNORM_3PACK16_KHR";
+        case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_422_UNORM_3PACK16_KHR: return "VK_FORMAT_G10X6_B10X6R10X6_2PLANE_422_UNORM_3PACK16_KHR";
+        case VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_444_UNORM_3PACK16_KHR: return "VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_444_UNORM_3PACK16_KHR";
+        case VK_FORMAT_R12X4_UNORM_PACK16_KHR: return "VK_FORMAT_R12X4_UNORM_PACK16_KHR";
+        case VK_FORMAT_R12X4G12X4_UNORM_2PACK16_KHR: return "VK_FORMAT_R12X4G12X4_UNORM_2PACK16_KHR";
+        case VK_FORMAT_R12X4G12X4B12X4A12X4_UNORM_4PACK16_KHR: return "VK_FORMAT_R12X4G12X4B12X4A12X4_UNORM_4PACK16_KHR";
+        case VK_FORMAT_G12X4B12X4G12X4R12X4_422_UNORM_4PACK16_KHR: return "VK_FORMAT_G12X4B12X4G12X4R12X4_422_UNORM_4PACK16_KHR";
+        case VK_FORMAT_B12X4G12X4R12X4G12X4_422_UNORM_4PACK16_KHR: return "VK_FORMAT_B12X4G12X4R12X4G12X4_422_UNORM_4PACK16_KHR";
+        case VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_420_UNORM_3PACK16_KHR: return "VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_420_UNORM_3PACK16_KHR";
+        case VK_FORMAT_G12X4_B12X4R12X4_2PLANE_420_UNORM_3PACK16_KHR: return "VK_FORMAT_G12X4_B12X4R12X4_2PLANE_420_UNORM_3PACK16_KHR";
+        case VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_422_UNORM_3PACK16_KHR: return "VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_422_UNORM_3PACK16_KHR";
+        case VK_FORMAT_G12X4_B12X4R12X4_2PLANE_422_UNORM_3PACK16_KHR: return "VK_FORMAT_G12X4_B12X4R12X4_2PLANE_422_UNORM_3PACK16_KHR";
+        case VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_444_UNORM_3PACK16_KHR: return "VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_444_UNORM_3PACK16_KHR";
+        case VK_FORMAT_G16B16G16R16_422_UNORM_KHR: return "VK_FORMAT_G16B16G16R16_422_UNORM_KHR";
+        case VK_FORMAT_B16G16R16G16_422_UNORM_KHR: return "VK_FORMAT_B16G16R16G16_422_UNORM_KHR";
+        case VK_FORMAT_G16_B16_R16_3PLANE_420_UNORM_KHR: return "VK_FORMAT_G16_B16_R16_3PLANE_420_UNORM_KHR";
+        case VK_FORMAT_G16_B16R16_2PLANE_420_UNORM_KHR: return "VK_FORMAT_G16_B16R16_2PLANE_420_UNORM_KHR";
+        case VK_FORMAT_G16_B16_R16_3PLANE_422_UNORM_KHR: return "VK_FORMAT_G16_B16_R16_3PLANE_422_UNORM_KHR";
+        case VK_FORMAT_G16_B16R16_2PLANE_422_UNORM_KHR: return "VK_FORMAT_G16_B16R16_2PLANE_422_UNORM_KHR";
+        case VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM_KHR: return "VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM_KHR";
+        case VK_FORMAT_G8_B8R8_2PLANE_444_UNORM_EXT: return "VK_FORMAT_G8_B8R8_2PLANE_444_UNORM_EXT";
+        case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_444_UNORM_3PACK16_EXT: return "VK_FORMAT_G10X6_B10X6R10X6_2PLANE_444_UNORM_3PACK16_EXT";
+        case VK_FORMAT_G12X4_B12X4R12X4_2PLANE_444_UNORM_3PACK16_EXT: return "VK_FORMAT_G12X4_B12X4R12X4_2PLANE_444_UNORM_3PACK16_EXT";
+        case VK_FORMAT_G16_B16R16_2PLANE_444_UNORM_EXT: return "VK_FORMAT_G16_B16R16_2PLANE_444_UNORM_EXT";
+        case VK_FORMAT_A4R4G4B4_UNORM_PACK16_EXT: return "VK_FORMAT_A4R4G4B4_UNORM_PACK16_EXT";
+        case VK_FORMAT_A4B4G4R4_UNORM_PACK16_EXT: return "VK_FORMAT_A4B4G4R4_UNORM_PACK16_EXT";
+        case VK_FORMAT_R16G16_S10_5_NV: return "VK_FORMAT_R16G16_S10_5_NV";
+        case VK_FORMAT_A1B5G5R5_UNORM_PACK16_KHR: return "VK_FORMAT_A1B5G5R5_UNORM_PACK16_KHR";
+        case VK_FORMAT_A8_UNORM_KHR: return "VK_FORMAT_A8_UNORM_KHR";
+        */
+        case VK_FORMAT_MAX_ENUM: return "VK_FORMAT_MAX_ENUM";
+    }
+
+    return "UNKNOWN_VK_FORMAT";
+}
 
 
 

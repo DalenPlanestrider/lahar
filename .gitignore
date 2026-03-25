@@ -5,3 +5,6 @@ build
 cmake-build-*
 *.o
 lahar
+.clangd
+compile_commands.json
+*.spv

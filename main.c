@@ -2,34 +2,29 @@
 #define LAHAR_IMPLEMENTATION
 #include "lahar.h"
 
+// Just the shader spirv code
+#include "shaders.h"
+
 #include <time.h>
 
 // 16.6 ms in ns, ~60 fps
 #define MIN_FRAME_NS 16666667
 
-uint64_t time_ns(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-}
-
-void sleep_ns(uint64_t ns) {
-    struct timespec ts = {
-        .tv_sec  = ns / 1000000000ULL,
-        .tv_nsec = ns % 1000000000ULL
-    };
-    nanosleep(&ts, NULL);
-}
-
-
 bool window_out_of_date = false;
+VkPipeline pipeline = VK_NULL_HANDLE;
+VkPipelineLayout layout = VK_NULL_HANDLE;
+
+
+uint32_t create_pipeline(LaharWindow* window);
+uint64_t time_ns(void);
+void sleep_ns(uint64_t ns);
 
 void window_resize(GLFWwindow* window, int width, int height) {
     window_out_of_date = true;
 }
 
 int main() {
-    uint32_t err;
+    uint32_t err = LAHAR_ERR_SUCCESS;
 
     if ((err = lahar_init())) {
         printf("Lahar failed to init: %s\n", lahar_err_name(err));
@@ -78,12 +73,17 @@ int main() {
         return 1;
     }
 
-    LaharWindowState* winstate = lahar_window_state(window);
+    // The window state contains anything specific to the window, such
+    // as attachments, the swapchain, the index of the current frame, and so on
+    const LaharWindowState* winstate = lahar_window_state(window);
 
-    /* Pipeline setup or whatever */
+    /* Optional pipeline setup utilities are available */
+    if ((err = create_pipeline(window))) {
+        return 1;
+    }
 
     while (!glfwWindowShouldClose(window)) {
-        uint64_t start = time_ns();
+        const uint64_t start = time_ns();
 
         glfwPollEvents();
 
@@ -91,11 +91,13 @@ int main() {
             if ((err = lahar_window_swapchain_resize(window))) {
                 printf("Lahar failed to resize swapchain: %s\n", lahar_err_name(err));
             }
+
+            window_out_of_date = false;
         }
 
         lahar_window_frame_begin(window);
 
-        VkCommandBuffer cmd = winstate->commands[winstate->frame_index];
+        VkCommandBuffer cmd = lahar_window_command_buffer(window);
 
         VkCommandBufferBeginInfo begin_info = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -105,28 +107,108 @@ int main() {
         vkResetCommandBuffer(cmd, 0);
         vkBeginCommandBuffer(cmd, &begin_info);
 
-        // These are utility functions that just automate format transitions for you, entirely optional
-        lahar_window_attachment_transition(window, LAHAR_ATT_COLOR_INDEX, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, cmd);
+        /* These are utility functions that just automate format transitions for you, entirely optional */
+        lahar_cmd_attachment_transition(cmd, window, 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+        /* Again, optional util for dynamic rendering */
+        lahar_cmd_begin_rendering(cmd, window);
 
         /* Just do normal vulkan draw stuff here */
 
-        lahar_window_attachment_transition(window, LAHAR_ATT_COLOR_INDEX, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, cmd);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+
+        VkRect2D scissor = {
+            .extent = {winstate->width, winstate->height},
+            .offset = {0, 0}
+        };
+
+        VkViewport viewport = {
+            .height = (float)winstate->height,
+            .width = (float)winstate->width,
+            .maxDepth = 1.0f
+        };
+
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
+        vkCmdSetViewport(cmd, 0, 1, &viewport);
+
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+
+        vkCmdEndRendering(cmd);
+
+        lahar_cmd_attachment_transition(cmd, window, 0, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
         vkEndCommandBuffer(cmd);
 
-        // Similar story for both submission and present, fully optional, one can do it manually
+        /* Similar story for both submission and present, fully optional, one can do it manually */
         lahar_window_submit(window, cmd);
         lahar_window_present(window);
 
-        uint64_t end = time_ns();
-        uint64_t elapsed = end - start;
+        const uint64_t end = time_ns();
+        const uint64_t elapsed = end - start;
+
         if (elapsed < MIN_FRAME_NS) {
             sleep_ns(MIN_FRAME_NS - elapsed);
         }
     }
 
+    lahar_window_wait_inactive(window);
+
     // Any Vulkan objects you created you must destroy before calling lahar deinit
+    if (pipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(lahar->device, pipeline, lahar->vkalloc);
+    }
+
+    if (layout != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(lahar->device, layout, lahar->vkalloc);
+    }
+
     lahar_deinit();
 
     return 0;
+}
+
+uint32_t create_pipeline(LaharWindow* window) {
+    /* Shaders work via builder. They default to sane values,
+     * and have an API for easy settings, like quickly setting
+     * dynamic values, culling, or blend modes, for example. 
+     * You can also pass VkPiplineLayoutCreate values directly, 
+     * if need be. There's hooks to handle compilation if you'd
+     * like to suport non-spirv languages.
+     *
+     * A spir-v reflection implementation is included.
+     */
+
+    LaharShaderBuilder info = {0};
+
+    lahar_shader_builder_set_window(&info, window);
+
+    lahar_shader_builder_add_stage(&info, &(LaharShaderStage){
+        .stage = VK_SHADER_STAGE_VERTEX_BIT,
+        .code = triangle_vert_spv,
+        .length = triangle_vert_spv_len
+    });
+
+    lahar_shader_builder_add_stage(&info, &(LaharShaderStage){
+        .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+        .code = triangle_frag_spv,
+        .length = triangle_frag_spv_len
+    });
+
+    lahar_shader_builder_set_cull_mode(&info, LAHAR_SCM_OFF);
+
+    return lahar_shader_build(&info, &pipeline, &layout);
+}
+
+uint64_t time_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
+void sleep_ns(uint64_t ns) {
+    struct timespec ts = {
+        .tv_sec  = ns / 1000000000ULL,
+        .tv_nsec = ns % 1000000000ULL
+    };
+    nanosleep(&ts, NULL);
 }

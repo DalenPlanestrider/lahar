@@ -1,5 +1,5 @@
 CC = gcc
-CCFLAGS = -Wall -Wextra
+CCFLAGS = -Wall -Wextra -Werror -Wno-unused-parameter
 LDFLAGS = -lglfw
 
 TARGET = lahar
