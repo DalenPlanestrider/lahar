@@ -234,6 +234,8 @@ Compile-Time Configuration options:
 #define LAHAR_ERR_MALFORMED_CODE 0x00020011             // This shader code is invalid
 #define LAHAR_ERR_ID_NOT_FOUND 0x00020012               // Couldn't find data on this ID
 #define LAHAR_ERR_INVALID_TYPE 0x00020013               // This type can't be used this way
+#define LAHAR_ERR_COMPILATION_FAILED 0x00020014         // Compilation of the provided source failed
+#define LAHAR_ERR_OUT_OF_SPACE 0x00020015               // A fixed buffer ran out of space, update your defines
 
 struct Lahar;
 typedef struct Lahar Lahar;
@@ -3296,6 +3298,12 @@ const char* lahar_err_name(uint32_t code) {
         case LAHAR_ERR_SWAPCHAIN_OUT_OF_DATE: return "LAHAR_ERR_SWAPCHAIN_OUT_OF_DATE";
         case LAHAR_ERR_INVALID_FRAME_STATE: return "LAHAR_ERR_INVALID_FRAME_STATE";
         case LAHAR_ERR_ATTACHMENT_WO_ALLOCATOR: return "LAHAR_ERR_ATTACHMENT_WO_ALLOCATOR";
+        case LAHAR_ERR_UNKNOWN_LANGUAGE: return "LAHAR_ERR_UNKNOWN_LANGUAGE";
+        case LAHAR_ERR_MALFORMED_CODE: return "LAHAR_ERR_MALFORMED_CODE";
+        case LAHAR_ERR_ID_NOT_FOUND: return "LAHAR_ERR_ID_NOT_FOUND";
+        case LAHAR_ERR_INVALID_TYPE: return "LAHAR_ERR_INVALID_TYPE";
+        case LAHAR_ERR_COMPILATION_FAILED: return "LAHAR_ERR_COMPILATION_FAILED";
+        case LAHAR_ERR_OUT_OF_SPACE: return "LAHAR_ERR_OUT_OF_SPACE";
         default: return "LAHAR_UNKNOWN_ERROR";
     }
 }
@@ -3819,6 +3827,12 @@ void lahar_deinit(void) {
     lahar_free(lahar->extensions.opt_dev_exts);
     lahar_free(lahar->extensions.opt_inst_exts_present);
     lahar_free(lahar->extensions.opt_dev_exts_present);
+
+    for (size_t i = 0; i < LAHAR_MAX_SHADER_COMPILERS; i++) {
+        if (lahar->shader_compilers[i].language) {
+            lahar_free((char*)lahar->shader_compilers[i].language);
+        }
+    }
 
     memset(lahar, 0, sizeof(*lahar));
 }
@@ -5050,6 +5064,31 @@ LaharAttachment* lahar_window_attachment_stencil(LaharWindow* window, uint32_t f
 
     return NULL;
 }
+
+uint32_t lahar_shader_register_compiler(
+    const char* language,
+    void* user_data,
+    LaharShaderCompileFunc compiler_func,
+    LaharShaderCompileReleaseFunc release_func
+) {
+    if (!language || !*language || !compiler_func || !release_func) {
+        return LAHAR_ERR_ILLEGAL_PARAMS;
+    }
+
+    for (uint32_t i = 0; i < LAHAR_MAX_SHADER_COMPILERS; i++) {
+        if (!lahar->shader_compilers[i].compile) {
+            lahar->shader_compilers[i].language = lahar_strdup(language);
+            lahar->shader_compilers[i].user_data = user_data;
+            lahar->shader_compilers[i].compile = compiler_func;
+            lahar->shader_compilers[i].release = release_func;
+
+            return LAHAR_ERR_SUCCESS;
+        }    
+    }
+
+    return LAHAR_ERR_OUT_OF_SPACE;
+}
+
 
 
 uint32_t lahar_shader_var_type_to_input_type(LaharShaderVarType svt, VkFormat* format_out) {
