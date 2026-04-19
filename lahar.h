@@ -1214,7 +1214,7 @@ void lahar_shader_introspection_print(const LaharShaderVarInfo* infos, uint32_t 
 
 extern Lahar __lahar_instance;
 extern Lahar* lahar;
-#define LAHAR_VERSION VK_MAKE_VERSION(2, 0, 0)
+#define LAHAR_VERSION VK_MAKE_VERSION(2, 1, 1)
 
 #if defined(__cplusplus) && defined(LAHAR_C_LINKAGE)
 }
@@ -5330,6 +5330,16 @@ error:
     return err;
 }
 
+LaharShaderCompiler* __lahar_shader_compiler_for(const char* language) {
+    for (uint32_t i = 0; i < LAHAR_MAX_SHADER_COMPILERS; i++) {
+        if (strcmp(language, lahar->shader_compilers[i].language) == 0) {
+            return &lahar->shader_compilers[i];
+        }
+    }
+
+    return NULL;
+}
+
 uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, VkPipelineLayout* layout) {
     if (!builder || ! pipeline || !layout) {
         return LAHAR_ERR_ILLEGAL_PARAMS;
@@ -5347,25 +5357,24 @@ uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, V
     bool layout_created = false;
 
     // Module/stage construction vars
+    LaharShaderStage final_stages[LAHAR_MAX_SHADER_STAGES] = ZINIT;
+    const LaharShaderCompiler* stage_compilers[LAHAR_MAX_SHADER_STAGES] = ZINIT;
+
     VkShaderModuleCreateInfo module_infos[LAHAR_MAX_SHADER_STAGES] = ZINIT;
     VkShaderModule modules[LAHAR_MAX_SHADER_STAGES] = ZINIT;
     VkPipelineShaderStageCreateInfo stage_infos[LAHAR_MAX_SHADER_STAGES] = ZINIT;
-    const LaharShaderCompiler* stage_compilers[LAHAR_MAX_SHADER_STAGES] = ZINIT;
-    uint32_t* compiled_sources[LAHAR_MAX_SHADER_STAGES] = ZINIT;
-    size_t compiled_sizes[LAHAR_MAX_SHADER_STAGES] = ZINIT;
     uint32_t stage_index = 0;
-    bool found_compiler = false;
 
     // Dynamic state vars
     uint32_t dynamic_state_count = 0;
     VkDynamicState dynamic_states[64] = ZINIT;
 
-    size_t max_states = sizeof(dynamic_states) / sizeof(dynamic_states[0]);
+    const size_t max_states = sizeof(dynamic_states) / sizeof(dynamic_states[0]);
 
-    bool is_vulkan_1_3 = lahar->vkversion >= VK_MAKE_VERSION(1, 3, 0);
-    bool has_dynamic_1 = lahar_extension_has_device(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
-    bool has_dynamic_2 = lahar_extension_has_device(VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME);
-    bool has_dynamic_3 = lahar_extension_has_device(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
+    const bool is_vulkan_1_3 = lahar->vkversion >= VK_MAKE_VERSION(1, 3, 0);
+    const bool has_dynamic_1 = lahar_extension_has_device(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
+    const bool has_dynamic_2 = lahar_extension_has_device(VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME);
+    const bool has_dynamic_3 = lahar_extension_has_device(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
 
     // Pipeline construction vars
     VkPipelineDynamicStateCreateInfo dynamic_state_info = ZINIT;
@@ -5390,44 +5399,58 @@ uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, V
     uint32_t shader_var_count = 0;
     LaharShaderVarInfo* shader_vars = NULL;
 
-    // Step 1: build stages/modules, handling compilation if needed
+    // Step 1: compile any non-spv stages
     while (builder->stages[stage_index].code && stage_index < LAHAR_MAX_SHADER_STAGES) {
         const LaharShaderStage* stage = &builder->stages[stage_index];
+        LaharShaderStage* outstage = &final_stages[stage_index];
 
-        if (!stage->lang || strcmp(stage->lang, "spv") == 0 || strcmp(stage->lang, "spirv") == 0) {
-            module_infos[stage_index].sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-            module_infos[stage_index].codeSize = stage->length;
-            module_infos[stage_index].pCode = (const uint32_t*)stage->code;
+        if (
+            !stage->lang || 
+            strcmp(stage->lang, "spv") == 0 || 
+            strcmp(stage->lang, "spirv") == 0 ||
+            strcmp(stage->lang, "spir-v") == 0 || 
+            strcmp(stage->lang, "SPV") == 0 || 
+            strcmp(stage->lang, "SPIRV") == 0 ||
+            strcmp(stage->lang, "SPIR-V") == 0
+        ) {
+            *outstage = *stage;
         }
         else {
-            found_compiler = false;
+            const LaharShaderCompiler* compiler = __lahar_shader_compiler_for(stage->lang);
 
-            for (size_t i = 0; i < LAHAR_MAX_SHADER_COMPILERS; i++) {
-                if (strcmp(stage->lang, lahar->shader_compilers[i].language) == 0) {
-                    stage_compilers[stage_index] = &lahar->shader_compilers[i];
-                    found_compiler = true;
-                    break;
-                }
-            }
-
-            if (!found_compiler) {
+            if (!compiler) {
                 err = LAHAR_ERR_UNKNOWN_LANGUAGE;
                 goto error;
             }
 
-            err = stage_compilers[stage_index]->compile(
-                stage_compilers[stage_index]->user_data,
+            err = compiler->compile(
+                compiler->user_data,
                 stage,
-                &compiled_sources[stage_index],
-                &compiled_sizes[stage_index]
+                (uint32_t**)&outstage->code,
+                &outstage->length
             );
 
             if (err) { goto error; }
 
-            module_infos[stage_index].sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-            module_infos[stage_index].codeSize = compiled_sizes[stage_index];
-            module_infos[stage_index].pCode = compiled_sources[stage_index];
+            stage_compilers[stage_index] = compiler;
+
+            outstage->stage = stage->stage;
+            outstage->lang = "spv";
+            outstage->entrypoint = stage->entrypoint;
         }
+
+        stage_index++;
+    }
+
+    stage_index = 0;
+
+    // Step 2: build stage modules
+    while (final_stages[stage_index].code && stage_index < LAHAR_MAX_SHADER_STAGES) {
+        const LaharShaderStage* stage = &final_stages[stage_index];
+
+        module_infos[stage_index].sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        module_infos[stage_index].codeSize = stage->length;
+        module_infos[stage_index].pCode = (const uint32_t*)stage->code;
 
         result = vkCreateShaderModule(lahar->device, &module_infos[stage_index], lahar->vkalloc, &modules[stage_index]);
         if (result != VK_SUCCESS) { err = LAHAR_ERR_VK_ERR; goto error; }
@@ -5440,6 +5463,7 @@ uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, V
         stage_index++;
     } 
 
+    // Step 3: begin pipeline configuration
     if (builder->all_dynamic) {
         static const VkDynamicState base[] = {
             VK_DYNAMIC_STATE_VIEWPORT,
@@ -5655,13 +5679,15 @@ uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, V
         final_pnext_chain = &rendering_info;
     }
 
-    if ((err = lahar_shader_introspect(builder->stages, builder->stage_count, &shader_var_count, NULL))) {
+
+    // Step 4: Introspect to get required info for layout
+    if ((err = lahar_shader_introspect(final_stages, builder->stage_count, &shader_var_count, NULL))) {
         goto error;
     }
 
     shader_vars = (LaharShaderVarInfo*)lahar_temp_alloc(shader_var_count * sizeof(*shader_vars));
 
-    if ((err = lahar_shader_introspect(builder->stages, builder->stage_count, &shader_var_count, shader_vars))) {
+    if ((err = lahar_shader_introspect(final_stages, builder->stage_count, &shader_var_count, shader_vars))) {
         goto error;
     }
 
@@ -5787,11 +5813,11 @@ uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, V
 
 error:
     for (size_t i = 0; i < stage_index; i++) {
-        if (stage_compilers[i] && compiled_sources[i]) {
+        if (stage_compilers[i] && final_stages[i].code) {
             stage_compilers[i]->release(
                 stage_compilers[i]->user_data,
-                compiled_sources[i],
-                compiled_sizes[i]
+                (uint32_t*)final_stages[i].code,
+                final_stages[i].length
             );
         }
 
