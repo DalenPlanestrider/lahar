@@ -3,10 +3,10 @@
 
 #include <stdlib.h>
 
-//const char* shader_vert = "/home/dalen/git/personal/lahar/test/shader/nasty_vert.spv";
-//const char* shader_frag = "/home/dalen/git/personal/lahar/test/shader/nasty_frag.spv";
-const char* shader_vert = "/home/dalen/git/personal/lahar/test/shader/shader3_vert.spv";
-const char* shader_frag = "/home/dalen/git/personal/lahar/test/shader/shader3_frag.spv";
+const char* shader_vert = "/home/dalen/git/personal/lahar/test/shader/nasty_vert.spv";
+const char* shader_frag = "/home/dalen/git/personal/lahar/test/shader/nasty_frag.spv";
+//const char* shader_vert = "/home/dalen/git/personal/lahar/test/shader/shader3_vert.spv";
+//const char* shader_frag = "/home/dalen/git/personal/lahar/test/shader/shader3_frag.spv";
 
 #define tassert(cond, msg) if (!(cond)) { printf("\tAssert failed: %s\n", msg); return false; }
 

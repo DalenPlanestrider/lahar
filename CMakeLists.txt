@@ -19,3 +19,17 @@ target_compile_options(lahar PRIVATE -Wall -Wextra -Werror
 
 add_executable(tests ${CMAKE_CURRENT_SOURCE_DIR}/test/tests.c)
 target_include_directories(tests SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+add_executable(cycle_tests ${CMAKE_CURRENT_SOURCE_DIR}/test/cycle.c)
+target_link_libraries(cycle_tests glfw)
+target_include_directories(cycle_tests SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+add_executable(allocator_tests test/allocator.cpp)
+target_compile_definitions(allocator_tests PRIVATE TEST_ALLOCATOR_VMA)
+target_include_directories(allocator_tests SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} test)
+target_link_libraries(allocator_tests dl)
+
+add_executable(freelist_allocator_tests test/allocator.cpp)
+target_compile_definitions(freelist_allocator_tests PRIVATE TEST_ALLOCATOR_FREELIST)
+target_include_directories(freelist_allocator_tests SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} test)
+target_link_libraries(freelist_allocator_tests dl)

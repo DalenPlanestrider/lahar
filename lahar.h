@@ -3,7 +3,7 @@
 #ifndef LAHAR_H
 #define LAHAR_H
 
-/* 
+/*
 
 General use:
 
@@ -28,7 +28,7 @@ The general flow is:
 6. Your normal vulkan flow. Set up pipelines, enter render loop, etc
 
 7. (optional) lahar has some utilities to simplify command submission, window presentation,
-   and layout transitions, if you want.    
+   and layout transitions, if you want.
 
 
 
@@ -115,6 +115,8 @@ Compile-Time Configuration options:
     #include <assert.h>
     #include <stdio.h>
     #include <stddef.h>
+
+    #define LAHAR_ALIGNOF(T) _Alignof(T)
 #else
     #include <cstdint>
     #include <cstring>
@@ -122,10 +124,12 @@ Compile-Time Configuration options:
     #include <cassert>
     #include <cstdio>
     #include <cstddef>
+
+    #define LAHAR_ALIGNOF(T) alignof(T)
 #endif
 
-#ifdef VULKAN_H_
-    #error "Lahar manages vulkan for you! There is no need to include vulkan.h"
+#if defined(VULKAN_H_) && !defined(VK_NO_PROTOTYPES)
+    #error "Lahar manages vulkan for you! If you must include vulkan.h before lahar (e.g. via vk_mem_alloc.h), define VK_NO_PROTOTYPES first so it doesn't conflict with lahar's function loading"
 #endif
 
 #ifdef _glfw3_h_
@@ -160,6 +164,7 @@ Compile-Time Configuration options:
 #elif defined(LAHAR_USE_SDL3)
     #ifndef LAHAR_NO_AUTO_INCLUDE
         #include <SDL3/SDL.h>
+        #include <SDL3/SDL_vulkan.h>
     #endif
 
     #define LaharWindow SDL_Window
@@ -182,14 +187,10 @@ Compile-Time Configuration options:
 
     #define LaharAllocation VmaAllocation
 #else
-    struct LaharAllocation;
-    typedef struct LaharAllocation LaharAllocation;
-
-    struct LaharAllocation {
-        VkDeviceMemory device_memory;
-        VkDeviceSize alloc_size;
-        VkDeviceSize alloc_offset;
-    };
+    /* An opaque allocation handle. Allocator implementations point this at
+     * their own internal bookkeeping for the allocation. NULL means "no
+     * allocation", so zero-initialized state is always valid. */
+    typedef void* LaharAllocation;
 #endif
 
 #if defined(_WIN32)
@@ -226,10 +227,10 @@ Compile-Time Configuration options:
 #define LAHAR_ERR_VK_ERR 0x00020009                     // A vulkan operation failed, see lahar.vkresult
 #define LAHAR_ERR_INVALID_WINDOW 0x0002000A             // This isn't a window known to lahar
 #define LAHAR_ERR_NO_COMMAND_BUFFER 0x0002000B          // You tried to present a frame without submitting any command buffers
-#define LAHAR_ERR_TIMEOUT 0x0002000C                    // A wait operation timed out          
+#define LAHAR_ERR_TIMEOUT 0x0002000C                    // A wait operation timed out
 #define LAHAR_ERR_SWAPCHAIN_OUT_OF_DATE 0x0002000D      // The swapchain needs updated
 #define LAHAR_ERR_INVALID_FRAME_STATE 0x0002000E        // You did things out of order (must always be frame_start -> submit -> present)
-#define LAHAR_ERR_ATTACHMENT_WO_ALLOCATOR 0x0002000F    // You requested non-color attachments for a window, but provided no allocator  
+#define LAHAR_ERR_ATTACHMENT_WO_ALLOCATOR 0x0002000F    // You requested non-color attachments for a window, but provided no allocator
 #define LAHAR_ERR_UNKNOWN_LANGUAGE 0x00020010           // Don't know this shader language
 #define LAHAR_ERR_MALFORMED_CODE 0x00020011             // This shader code is invalid
 #define LAHAR_ERR_ID_NOT_FOUND 0x00020012               // Couldn't find data on this ID
@@ -241,7 +242,7 @@ struct Lahar;
 typedef struct Lahar Lahar;
 
 struct LaharDeviceInfo;
-typedef struct LaharDeviceInfo LaharDeviceInfo; 
+typedef struct LaharDeviceInfo LaharDeviceInfo;
 
 struct LaharAttachment;
 typedef struct LaharAttachment LaharAttachment;
@@ -312,7 +313,17 @@ typedef enum LaharShaderFaceMode LaharShaderFaceMode;
 
 enum LaharAttachmentRole;
 typedef enum LaharAttachmentRole LaharAttachmentRole;
+
+enum LaharMemoryUsage;
+typedef enum LaharMemoryUsage LaharMemoryUsage;
 #endif
+
+enum LaharMemoryUsage {
+    LAHAR_MU_GPU_ONLY,
+    LAHAR_MU_UPLOAD,
+    LAHAR_MU_UPLOAD_DEVICE,
+    LAHAR_MU_READBACK,
+};
 
 typedef PFN_vkVoidFunction (*LaharLoaderFunc)(const char*);
 typedef int64_t (*LaharDeviceScoreFunc)(const LaharDeviceInfo*);
@@ -324,10 +335,20 @@ typedef uint32_t (*LaharShaderCompileReleaseFunc)(void* data, uint32_t* spv, uin
 
 typedef uint32_t (*LaharAllocImageFunc)(void* self, Lahar* lahar, const VkImageCreateInfo* info, VkImage* img_out, LaharAllocation* alloc_out);
 typedef uint32_t (*LaharFreeImageFunc)(void* self, Lahar* lahar, VkImage* img, LaharAllocation* alloc);
+typedef uint32_t (*LaharAllocBufferFunc)(void* self, Lahar*, const VkBufferCreateInfo*, LaharMemoryUsage usage, VkBuffer*, LaharAllocation*);
+typedef uint32_t (*LaharFreeBufferFunc)(void* self, Lahar*, VkBuffer*, LaharAllocation*);
+typedef uint32_t (*LaharMapFunc)(void* self, Lahar*, LaharAllocation, void** out);
+typedef uint32_t (*LaharUnmapFunc)(void* self, Lahar*, LaharAllocation);
+typedef uint32_t (*LaharFlushFunc)(void* self, Lahar*, LaharAllocation, uint64_t off, uint64_t size);
 
 struct LaharAllocator {
     LaharAllocImageFunc alloc_image;
     LaharFreeImageFunc free_image;
+    LaharAllocBufferFunc alloc_buffer;
+    LaharFreeBufferFunc free_buffer;
+    LaharMapFunc map;
+    LaharUnmapFunc unmap;
+    LaharFlushFunc flush;
 };
 
 struct LaharDeviceInfo {
@@ -553,7 +574,7 @@ void lahar_builder_set_debug_level(LaharDebugLevel level);
 /** Set the version of vulkan you'd like to load */
 void lahar_builder_set_vulkan_version(uint32_t version);
 
-/** Inform lahar to load the validation layers, if available */ 
+/** Inform lahar to load the validation layers, if available */
 void lahar_builder_request_validation_layers(void);
 
 /** Add an extension to the list of required instance extensions
@@ -585,7 +606,7 @@ void lahar_builder_set_debug_callback(PFN_vkDebugUtilsMessengerCallbackEXT callb
 
 /** Set a specific device to use. Failure to find the device will
  * always cause finalize to return LAHAR_ERR_NO_SUITABLE_DEVICE
- * 
+ *
  * @param lahar The lahar instance
  * @param name The device name
  */
@@ -595,7 +616,7 @@ uint32_t lahar_builder_device_use(const char* name);
  * for all devices. Any device with a negative score is ineligble. The
  * device with the highest score is chosen. If not set, the default
  * scoring function is used.
- * 
+ *
  * @param lahar The lahar instance
  * @param scorefunc The scoring callback
  */
@@ -609,33 +630,33 @@ void lahar_builder_request_command_buffers(void);
  * This is useful for enabling device features, such as dynamic rendering */
 void lahar_builder_set_device_create_pnext(void* pnext);
 
-/** Register a window with lahar. When finalized, this window will have its surface/swapchain/attachments created. 
- * 
+/** Register a window with lahar. When finalized, this window will have its surface/swapchain/attachments created.
+ *
  * NOTE: UNLESS you've defined LAHAR_NO_AUTO_DEPS, lahar will take ownership of the window,
  * and destroy it when lahar is deinited.
- * 
+ *
  * @param Lahar The lahar instance
  * @param window The window to register
  * @param winprofile The quick profile to use. For more control, see lahar_window_register_ex
 */
 uint32_t lahar_builder_window_register(LaharWindow* window, LaharWindowProfile winprofile);
 
-/** Register a window with lahar. When finalized, this window will have its surface/swapchain/attachments created. 
- * 
+/** Register a window with lahar. When finalized, this window will have its surface/swapchain/attachments created.
+ *
  * The config MUST contain at least one attachment config. The attachment config at index 0 _must_
  * be the config for the color attachment. Some of its fields may be ignored, but the usage flag
  * will be respected, if it is set.
- * 
+ *
  * Any attachment configs you use _after_ that will be reflected in the LaharWindowState.attachments
  * array.
- * 
+ *
  * NOTE: UNLESS you've defined LAHAR_NO_AUTO_DEPS, lahar will take ownership of the window,
  * and destroy it when lahar is deinited.
- * 
+ *
  * @param lahar The lahar instance
  * @param window The window
  * @param winconfig The config
- * 
+ *
  */
 uint32_t lahar_builder_window_register_ex(LaharWindow* window, const LaharWindowConfig* winconfig);
 
@@ -691,52 +712,52 @@ uint32_t lahar_window_present(LaharWindow* window);
 uint32_t lahar_window_swapchain_resize(LaharWindow* window);
 
 /** THIS IS ONE OF THE CUSTOM WINDOW FUNCTIONS.
- * 
+ *
  * If using one of the window libraries supported by lahar, this is automatically implemented for you.
  * If you're using a custom window implementation, YOU must supply an implementation of this, or
  * you will get linker errors.
- * 
+ *
  * Create the vulkan surface.
- * 
+ *
  * @param lahar The lahar instance
  * @param window The window
  * @param surface (out) The created surface
- * 
+ *
  * @returns 0 for success, or any non-zero value to indicate failure, preferably a LAHAR_ERR_*
  */
 uint32_t lahar_window_surface_create(LaharWindow* window, VkSurfaceKHR* surface);
 
 /** THIS IS ONE OF THE CUSTOM WINDOW FUNCTIONS.
- * 
+ *
  * If using one of the window libraries supported by lahar, this is automatically implemented for you.
  * If you're using a custom window implementation, YOU must supply an implementation of this, or
  * you will get linker errors.
- * 
+ *
  * Retrieve the window's size. You likely want this to return the framebuffer size
  * specifically.
- * 
+ *
  * @param lahar The lahar instance
  * @param window The window
  * @param width (out) The window's width
- * @param height (out) The window's height 
- * 
+ * @param height (out) The window's height
+ *
  * @returns 0 for success, or any non-zero value to indicate failure, preferably a LAHAR_ERR_*
  */
 uint32_t lahar_window_get_size(LaharWindow* window, uint32_t* width, uint32_t* height);
 
 /** THIS IS ONE OF THE CUSTOM WINDOW FUNCTIONS.
- * 
+ *
  * If using one of the window libraries supported by lahar, this is automatically implemented for you.
  * If you're using a custom window implementation, YOU must supply an implementation of this, or
  * you will get linker errors.
- * 
+ *
  * Retrieve the extensions the window needs in order to function
- * 
+ *
  * @param lahar The lahar instance
  * @param window The window
  * @param ext_count (out) The number of extensions the window needs
  * @param extensions (out) The array to write to. This MUST support NULL
- * 
+ *
  * @returns 0 for success, or any non-zero value to indicate failure, preferably a LAHAR_ERR_*
  */
 
@@ -829,13 +850,13 @@ VkCommandBuffer lahar_window_command_buffer(LaharWindow* window);
 
 /** A utility to record the command to transition a the layout of a window's
  * attachment. Useful if you're doing dynamic rendering.
- * 
+ *
  * @param cmd The command buffer to record to
  * @param lahar The lahar instance
  * @param window The window
  * @param attachment_index The index of the attachment to transition, as specified in your original attachment array (or see defaults)
  * @param layout The layout to transition to
- * 
+ *
  */
 uint32_t lahar_cmd_attachment_transition(VkCommandBuffer cmd, LaharWindow* window, uint32_t attachment_index, VkImageLayout layout);
 
@@ -1212,9 +1233,52 @@ uint32_t lahar_shader_introspect(const LaharShaderStage* stages, uint32_t num_st
  */
 void lahar_shader_introspection_print(const LaharShaderVarInfo* infos, uint32_t count);
 
+
+
+
+
+
+
+
+
+struct LaharFreelistStats;
+typedef struct LaharFreelistStats LaharFreelistStats;
+
+struct LaharFreelistStats {
+    uint64_t reserved;          // Total VkDeviceMemory held (blocks + dedicated)
+    uint64_t used;              // Sum of live allocation sizes
+    uint64_t live_allocations;  // Number of outstanding allocations
+    uint64_t block_count;       // Number of live memory blocks
+    uint64_t dedicated_count;   // Number of live dedicated allocations
+};
+
+LaharAllocator* lahar_allocator_freelist(void);
+uint32_t __lahar_init_freelist_alloc(void);
+void lahar_freelist_deinit(void);
+uint32_t lahar_freelist_stats(LaharFreelistStats* out);
+uint32_t lahar_freelist_allocation_name(LaharAllocation alloc, const char* name);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 extern Lahar __lahar_instance;
 extern Lahar* lahar;
-#define LAHAR_VERSION VK_MAKE_VERSION(2, 1, 1)
+#define LAHAR_VERSION VK_MAKE_VERSION(3, 0, 0)
 
 #if defined(__cplusplus) && defined(LAHAR_C_LINKAGE)
 }
@@ -2471,7 +2535,7 @@ extern PFN_vkAcquireNextImage2KHR vkAcquireNextImage2KHR;
     #define lahar_free(ptr) free(ptr)
 #endif
 
-#ifndef LAHAR_M_ARENA_SIZE 
+#ifndef LAHAR_M_ARENA_SIZE
     #define LAHAR_M_ARENA_SIZE 65536
 #endif
 
@@ -2481,9 +2545,9 @@ extern PFN_vkAcquireNextImage2KHR vkAcquireNextImage2KHR;
 
 #ifndef LAHAR_DEFAULT_ALIGNMENT
     #ifdef __cplusplus
-        #define LAHAR_DEFAULT_ALIGNMENT alignof(max_align_t)
+        #define LAHAR_DEFAULT_ALIGNMENT LAHAR_ALIGNOF(max_align_t)
     #else
-        #define LAHAR_DEFAULT_ALIGNMENT _Alignof(max_align_t)
+        #define LAHAR_DEFAULT_ALIGNMENT LAHAR_ALIGNOF(max_align_t)
     #endif
 #endif
 
@@ -2637,6 +2701,14 @@ void __lahar_error(const char* msg, ...) {
         return module ? LAHAR_ERR_SUCCESS : LAHAR_ERR_LOAD_FAILURE;
     }
 
+    /** Close the handle to the vulkan lib */
+    static void __lahar_close_libvk() {
+        if (lahar->libvulkan) {
+            FreeLibrary(lahar->libvulkan);
+            lahar->libvulkan = NULL;
+        }
+    }
+
     /** Loader callback for loading a function from the vulkan lib using native loading mechanisms */
     static PFN_vkVoidFunction lahar_loader_sym(const char* name) {
         return GetProcAddress(lahar->libvulkan, name);
@@ -2654,6 +2726,14 @@ void __lahar_error(const char* msg, ...) {
 
         lahar->libvulkan = module;
         return module ? LAHAR_ERR_SUCCESS : LAHAR_ERR_LOAD_FAILURE;
+    }
+
+    /** Close the handle to the vulkan lib */
+    static void __lahar_close_libvk() {
+        if (lahar->libvulkan) {
+            dlclose(lahar->libvulkan);
+            lahar->libvulkan = NULL;
+        }
     }
 
     /** Loader callback for loading a function from the vulkan lib using native loading mechanisms */
@@ -2743,7 +2823,7 @@ static VkBaseInStructure* __lahar_pnext_fetch(void* chain, VkStructureType type)
     }
 #elif defined(LAHAR_USE_SDL3)
     uint32_t lahar_window_surface_create(LaharWindow* window, VkSurfaceKHR* surface) {
-        if (!SDL_Vulkan_CreateSurface(window, lahar->instance, surface)) {
+        if (!SDL_Vulkan_CreateSurface(window, lahar->instance, lahar->vkalloc, surface)) {
             fprintf(stderr, "%s\n", SDL_GetError());
             return LAHAR_ERR_DEPENDENCY_FAILED;
         }
@@ -2754,7 +2834,9 @@ static VkBaseInStructure* __lahar_pnext_fetch(void* chain, VkStructureType type)
     uint32_t lahar_window_get_size(LaharWindow* window, uint32_t* width, uint32_t* height) {
         int w, h;
 
-        SDL_Vulkan_GetDrawableSize(window, &w, &h);
+        if (!SDL_GetWindowSizeInPixels(window, &w, &h)) {
+            return LAHAR_ERR_DEPENDENCY_FAILED;
+        }
 
         *width = (uint32_t)w;
         *height = (uint32_t)h;
@@ -2820,9 +2902,93 @@ static VkBaseInStructure* __lahar_pnext_fetch(void* chain, VkStructureType type)
         return LAHAR_ERR_SUCCESS;
     }
 
+    static uint32_t __lahar_vma_alloc_buffer(void* self, Lahar* lahar, const VkBufferCreateInfo* info, LaharMemoryUsage usage, VkBuffer* buffer, VmaAllocation* allocation) {
+        if (!self || !lahar) { return LAHAR_ERR_INVALID_STATE; }
+        if (!lahar->vma) { return LAHAR_ERR_INVALID_CONFIGURATION; }
+        if (!info || !buffer || !allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+        VmaAllocationCreateInfo alloc_create = ZINIT;
+        VmaAllocationInfo alloc_info = ZINIT;
+
+        switch (usage) {
+            case LAHAR_MU_GPU_ONLY:
+                alloc_create.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+                break;
+            case LAHAR_MU_UPLOAD:
+                alloc_create.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+                alloc_create.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+                break;
+            case LAHAR_MU_UPLOAD_DEVICE:
+                alloc_create.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+                alloc_create.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+                break;
+            case LAHAR_MU_READBACK:
+                alloc_create.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+                alloc_create.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+                break;
+            default:
+                return LAHAR_ERR_ILLEGAL_PARAMS;
+        }
+
+        if ((lahar->vkresult = vmaCreateBuffer(lahar->vma, info, &alloc_create, buffer, allocation, &alloc_info)) != VK_SUCCESS) {
+            return LAHAR_ERR_DEPENDENCY_FAILED;
+        }
+
+        return LAHAR_ERR_SUCCESS;
+    }
+
+    static uint32_t __lahar_vma_free_buffer(void* self, Lahar* lahar, VkBuffer* buffer, VmaAllocation* allocation) {
+        if (!self || !lahar) { return LAHAR_ERR_INVALID_STATE; }
+        if (!lahar->vma) { return LAHAR_ERR_INVALID_CONFIGURATION; }
+        if (!buffer || !allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+        vmaDestroyBuffer(lahar->vma, *buffer, *allocation);
+
+        return LAHAR_ERR_SUCCESS;
+    }
+
+    static uint32_t __lahar_vma_map(void* self, Lahar* lahar, VmaAllocation allocation, void** out) {
+        if (!self || !lahar) { return LAHAR_ERR_INVALID_STATE; }
+        if (!lahar->vma) { return LAHAR_ERR_INVALID_CONFIGURATION; }
+        if (!allocation || !out) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+        if ((lahar->vkresult = vmaMapMemory(lahar->vma, allocation, out)) != VK_SUCCESS) {
+            return LAHAR_ERR_DEPENDENCY_FAILED;
+        }
+
+        return LAHAR_ERR_SUCCESS;
+    }
+
+    static uint32_t __lahar_vma_unmap(void* self, Lahar* lahar, VmaAllocation allocation) {
+        if (!self || !lahar) { return LAHAR_ERR_INVALID_STATE; }
+        if (!lahar->vma) { return LAHAR_ERR_INVALID_CONFIGURATION; }
+        if (!allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+        vmaUnmapMemory(lahar->vma, allocation);
+
+        return LAHAR_ERR_SUCCESS;
+    }
+
+    static uint32_t __lahar_vma_flush(void* self, Lahar* lahar, VmaAllocation allocation, uint64_t off, uint64_t size) {
+        if (!self || !lahar) { return LAHAR_ERR_INVALID_STATE; }
+        if (!lahar->vma) { return LAHAR_ERR_INVALID_CONFIGURATION; }
+        if (!allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+        if ((lahar->vkresult = vmaFlushAllocation(lahar->vma, allocation, off, size)) != VK_SUCCESS) {
+            return LAHAR_ERR_DEPENDENCY_FAILED;
+        }
+
+        return LAHAR_ERR_SUCCESS;
+    }
+
     static LaharAllocator __lahar_vma_adapter = {
         .alloc_image = __lahar_vma_alloc_img,
-        .free_image = __lahar_vma_free_img
+        .free_image = __lahar_vma_free_img,
+        .alloc_buffer = __lahar_vma_alloc_buffer,
+        .free_buffer = __lahar_vma_free_buffer,
+        .map = __lahar_vma_map,
+        .unmap = __lahar_vma_unmap,
+        .flush = __lahar_vma_flush
     };
 
     uint32_t lahar_vma_set_allocator(VmaAllocator allocator) {
@@ -2937,11 +3103,11 @@ void lahar_temp_mpop() {
 void* lahar_temp_alloc_aligned(size_t bytes, size_t alignment) {
     uintptr_t current = (uintptr_t)&__marena[__mpos];
     size_t padding = (-(size_t)current) & (alignment - 1);
-    
+
     size_t real_amt = padding + bytes;
-    
+
     LAHAR_ASSERT(sizeof(__marena) - __mpos >= real_amt);
-    
+
     void* ret = &__marena[__mpos + padding];
     __mpos += real_amt;
     memset(ret, 0, bytes);
@@ -3020,7 +3186,7 @@ static int64_t __lahar_default_scorer(const LaharDeviceInfo* devinfo) {
     const double rescaled = rescaled_base * 1000.0;
 
     const size_t remapped_memory = (size_t)rescaled;
-    score += remapped_memory;
+    score += (int64_t)remapped_memory;
 
     return score;
 }
@@ -3331,9 +3497,15 @@ uint32_t lahar_init(void) {
 
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
-        #elif defined(LAHAR_USE_SDL2) || defined(LAHAR_USE_SDL3)
+        #elif defined(LAHAR_USE_SDL2)
 
         if (SDL_Init(SDL_INIT_EVERYTHING)) {
+            return LAHAR_ERR_DEPENDENCY_FAILED;
+        }
+
+        #elif defined(LAHAR_USE_SDL3)
+
+        if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
             return LAHAR_ERR_DEPENDENCY_FAILED;
         }
 
@@ -3342,7 +3514,7 @@ uint32_t lahar_init(void) {
 
 
     uint32_t err = LAHAR_ERR_SUCCESS;
-    
+
     if ((err = __lahar_open_libvk())) {
         return err;
     }
@@ -3355,7 +3527,16 @@ uint32_t lahar_init(void) {
 }
 
 uint32_t lahar_builder_allocator_set(LaharAllocator* allocator) {
-    if (!allocator || !allocator->alloc_image || !allocator->free_image) {
+    if (
+        !allocator ||
+        !allocator->alloc_image ||
+        !allocator->free_image ||
+        !allocator->alloc_buffer ||
+        !allocator->free_buffer ||
+        !allocator->map ||
+        !allocator->unmap ||
+        !allocator->flush
+    ) {
         return LAHAR_ERR_ILLEGAL_PARAMS;
     }
 
@@ -3392,7 +3573,7 @@ uint32_t lahar_builder_extension_add_required_instance(const char* extension) {
     if (!cpy) { return LAHAR_ERR_ALLOC_FAILED; }
 
     lahar->extensions.req_inst_exts[lahar->extensions.rie_count++] = cpy;
-    
+
     return LAHAR_ERR_SUCCESS;
 }
 
@@ -3409,7 +3590,7 @@ uint32_t lahar_builder_extension_add_required_device(const char* extension) {
     if (!cpy) { return LAHAR_ERR_ALLOC_FAILED; }
 
     lahar->extensions.req_dev_exts[lahar->extensions.rde_count++] = cpy;
-    
+
     return LAHAR_ERR_SUCCESS;
 }
 
@@ -3441,7 +3622,7 @@ uint32_t lahar_builder_extension_add_optional_instance(const char* extension) {
     lahar->extensions.opt_inst_exts_present[count] = false;
 
     lahar->extensions.oie_count++;
-    
+
     return LAHAR_ERR_SUCCESS;
 }
 
@@ -3521,7 +3702,7 @@ uint32_t lahar_builder_window_register_ex(LaharWindow* window, const LaharWindow
 
     window_state = &lahar->windows[lahar->window_count++];
     memset(window_state, 0, sizeof(*window_state));
-    
+
     window_state->window = window;
 
     if ((err = lahar_window_get_size(window, &window_state->width, &window_state->height))) {
@@ -3584,7 +3765,7 @@ uint32_t lahar_builder_window_register(LaharWindow* window, LaharWindowProfile w
                         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
                         .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
                     },
-                    .img_info = { 
+                    .img_info = {
                         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                         .imageType = VK_IMAGE_TYPE_2D,
                         .format = VK_FORMAT_D32_SFLOAT,
@@ -3774,7 +3955,9 @@ void lahar_deinit(void) {
     }
 
     #if defined(LAHAR_USE_VMA)
-    __lahar_deinit_vma(lahar);
+    __lahar_deinit_vma();
+    #else
+    lahar_freelist_deinit();
     #endif
 
     if (lahar->pool != VK_NULL_HANDLE && vkDestroyCommandPool) {
@@ -3833,6 +4016,8 @@ void lahar_deinit(void) {
             lahar_free((char*)lahar->shader_compilers[i].language);
         }
     }
+
+    __lahar_close_libvk();
 
     memset(lahar, 0, sizeof(*lahar));
 }
@@ -4091,6 +4276,7 @@ uint32_t __lahar_build_physdev(void) {
         devinfo->physdev = devices[i];
         vkGetPhysicalDeviceProperties(dev_infos[i].physdev, &dev_infos[i].properties);
         vkGetPhysicalDeviceFeatures(dev_infos[i].physdev, &dev_infos[i].features);
+        vkGetPhysicalDeviceMemoryProperties(dev_infos[i].physdev, &dev_infos[i].memprops);
 
         uint32_t queue_fam_ct = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(devinfo->physdev, &queue_fam_ct, NULL);
@@ -4107,7 +4293,7 @@ uint32_t __lahar_build_physdev(void) {
             VkBool32 presentSupport = true;
 
             for (size_t k = 0; k < lahar->window_count; k++) {
-                VkBool32 thisWin = false; 
+                VkBool32 thisWin = false;
                 vkGetPhysicalDeviceSurfaceSupportKHR(devinfo->physdev, j, lahar->windows[k].surface, &thisWin);
 
                 if (!thisWin) { presentSupport = false; break; }
@@ -4243,10 +4429,10 @@ uint32_t __lahar_build_device(void) {
     };
 
     if (lahar_extension_has_device(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME)) {
-        const VkPhysicalDeviceDynamicRenderingFeatures* dyn_feature = 
+        const VkPhysicalDeviceDynamicRenderingFeatures* dyn_feature =
         (const VkPhysicalDeviceDynamicRenderingFeatures* )__lahar_pnext_fetch(pnext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES);
 
-        const VkPhysicalDeviceVulkan13Features* vk13_feature = 
+        const VkPhysicalDeviceVulkan13Features* vk13_feature =
         (const VkPhysicalDeviceVulkan13Features* )__lahar_pnext_fetch(pnext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES);
 
         if (vk13_feature) {
@@ -4309,7 +4495,11 @@ uint32_t __lahar_build_swapchain(void) {
     LaharSurfacePresentModeChooseFunc choose_mode = lahar->present_chooser ? lahar->present_chooser : __lahar_default_surface_present_mode_chooser;
 
     #if defined(LAHAR_USE_VMA)
-    if ((err = __lahar_init_vma(lahar))) {
+    if ((err = __lahar_init_vma())) {
+        goto end;
+    }
+    #else
+    if ((err = __lahar_init_freelist_alloc())) {
         goto end;
     }
     #endif
@@ -4343,7 +4533,7 @@ uint32_t __lahar_build_swapchain(void) {
             .imageFormat = winstate->surface_format.format,
             .imageColorSpace = winstate->surface_format.colorSpace,
             .imageArrayLayers = 1,
-            .imageUsage = color_conf->usage ? color_conf->usage : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 
+            .imageUsage = color_conf->usage ? color_conf->usage : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
             .imageSharingMode = queue_indices[0] == queue_indices[1] ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT,
             .queueFamilyIndexCount = queue_index_count,
             .pQueueFamilyIndices = queue_indices,
@@ -4773,7 +4963,7 @@ VkImageAspectFlags __lahar_aspect_mask_from_usage(VkImageUsageFlags usage, VkFor
                 return VK_IMAGE_ASPECT_DEPTH_BIT;
         }
     }
-    
+
     return VK_IMAGE_ASPECT_COLOR_BIT;
 }
 
@@ -4830,7 +5020,7 @@ uint32_t lahar_window_wait_inactive(LaharWindow* window) {
     if (!winstate) { return LAHAR_ERR_INVALID_WINDOW; }
 
     if ((lahar->vkresult = vkWaitForFences(lahar->device, winstate->max_in_flight, winstate->in_flight, VK_TRUE, UINT64_MAX)) != VK_SUCCESS) {
-        return LAHAR_ERR_VK_ERR;   
+        return LAHAR_ERR_VK_ERR;
     }
 
     return LAHAR_ERR_SUCCESS;
@@ -5083,7 +5273,7 @@ uint32_t lahar_shader_register_compiler(
             lahar->shader_compilers[i].release = release_func;
 
             return LAHAR_ERR_SUCCESS;
-        }    
+        }
     }
 
     return LAHAR_ERR_OUT_OF_SPACE;
@@ -5182,7 +5372,7 @@ uint32_t __lahar_shader_set_binding_infos(uint32_t shader_var_count, LaharShader
     for (uint32_t i = 0; i < shader_var_count; i++) {
         const LaharShaderVarInfo* var = &shader_vars[i];
 
-        const bool is_uniform = 
+        const bool is_uniform =
             var->storage_class == LAHAR_SVSC_UNIFORM_BUFFER ||
             var->storage_class == LAHAR_SVSC_UNIFORM_CONSTANT ||
             var->storage_class == LAHAR_SVSC_STORAGE_BUFFER;
@@ -5206,7 +5396,7 @@ uint32_t __lahar_shader_set_binding_infos(uint32_t shader_var_count, LaharShader
         for (uint32_t i = 0; i < shader_var_count; i++) {
             const LaharShaderVarInfo* var = &shader_vars[i];
 
-            const bool is_uniform = 
+            const bool is_uniform =
                 var->storage_class == LAHAR_SVSC_UNIFORM_BUFFER ||
                 var->storage_class == LAHAR_SVSC_UNIFORM_CONSTANT ||
                 var->storage_class == LAHAR_SVSC_STORAGE_BUFFER;
@@ -5251,7 +5441,7 @@ uint32_t __lahar_shader_create_layout(uint32_t shader_var_count, LaharShaderVarI
     for (uint32_t i = 0; i < shader_var_count; i++) {
         const LaharShaderVarInfo* var = &shader_vars[i];
 
-        const bool is_uniform = 
+        const bool is_uniform =
             var->storage_class == LAHAR_SVSC_UNIFORM_BUFFER ||
             var->storage_class == LAHAR_SVSC_UNIFORM_CONSTANT ||
             var->storage_class == LAHAR_SVSC_STORAGE_BUFFER;
@@ -5405,11 +5595,11 @@ uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, V
         LaharShaderStage* outstage = &final_stages[stage_index];
 
         if (
-            !stage->lang || 
-            strcmp(stage->lang, "spv") == 0 || 
+            !stage->lang ||
+            strcmp(stage->lang, "spv") == 0 ||
             strcmp(stage->lang, "spirv") == 0 ||
-            strcmp(stage->lang, "spir-v") == 0 || 
-            strcmp(stage->lang, "SPV") == 0 || 
+            strcmp(stage->lang, "spir-v") == 0 ||
+            strcmp(stage->lang, "SPV") == 0 ||
             strcmp(stage->lang, "SPIRV") == 0 ||
             strcmp(stage->lang, "SPIR-V") == 0
         ) {
@@ -5461,7 +5651,7 @@ uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, V
         stage_infos[stage_index].pName = stage->entrypoint ? stage->entrypoint : "main";
 
         stage_index++;
-    } 
+    }
 
     // Step 3: begin pipeline configuration
     if (builder->all_dynamic) {
@@ -5702,7 +5892,7 @@ uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, V
         for (uint32_t j = 0; j < shader_var_count; j++) {
             const LaharShaderVarInfo* var = &shader_vars[j];
             if (var->storage_class != LAHAR_SVSC_INPUT) { continue; }
-            
+
             bool found = false;
             for (uint32_t i = 0; i < builder->attrib_count; i++) {
                 if (builder->attrib_descriptions[i].location == var->location) {
@@ -5710,12 +5900,12 @@ uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, V
                     const VkFormat format = builder->attrib_descriptions[i].format;
 
                     VkFormat expected;
-                    
+
                     if ((err = lahar_shader_var_type_to_input_type(var->type, &expected))) {
                         lahar_error("Location %" PRIu32 " has type Lahar doesn't support for vertex inputs", var->location);
                         goto error;
                     }
-                    
+
                     if (expected != format) {
                         lahar_error(
                             "Location %" PRIu32 " expected format %s, got %s",
@@ -5730,7 +5920,7 @@ uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, V
                     break;
                 }
             }
-            
+
             if (!found) {
                 lahar_error("Shader consumes input location %" PRIu32 " but config does not supply it", var->location);
                 err = LAHAR_ERR_INVALID_CONFIGURATION;
@@ -5750,12 +5940,12 @@ uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, V
                     found = true;
 
                     VkFormat expected;
-                    
+
                     if ((err = lahar_shader_var_type_to_input_type(var->type, &expected))) {
                         lahar_error("Location %" PRIu32 " has type Lahar doesn't support for vertex inputs", location);
                         goto error;
                     }
-                    
+
                     if (expected != format) {
                         lahar_error(
                             "Location %" PRIu32 " expected format %s, got %s",
@@ -5787,7 +5977,7 @@ uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, V
 
         layout_created = true;
     }
-    
+
 
     pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     pipeline_info.pNext = final_pnext_chain;
@@ -5876,7 +6066,7 @@ void lahar_shader_builder_set_window(LaharShaderBuilder* builder, LaharWindow* w
     memset(builder->blend_states, 0, sizeof(builder->blend_states));
 
     for (uint32_t i = 0; i < builder->blend_state_count; i++) {
-        builder->blend_states[i].colorWriteMask = 
+        builder->blend_states[i].colorWriteMask =
             VK_COLOR_COMPONENT_R_BIT
             | VK_COLOR_COMPONENT_G_BIT
             | VK_COLOR_COMPONENT_B_BIT
@@ -5891,7 +6081,7 @@ void lahar_shader_builder_set_formats(LaharShaderBuilder* builder, VkFormat colo
 }
 
 void lahar_shader_builder_set_blend_states(LaharShaderBuilder* builder, VkPipelineColorBlendAttachmentState* states, uint32_t state_count) {
-    const uint64_t max = sizeof(builder->blend_states) / sizeof(builder->blend_states[0]);
+    const uint32_t max = sizeof(builder->blend_states) / sizeof(builder->blend_states[0]);
     builder->blend_state_count = state_count > max ? max : state_count;
     memcpy(builder->blend_states, states, builder->blend_state_count * sizeof(*builder->blend_states));
 }
@@ -6088,7 +6278,7 @@ typedef struct LaharSPVMemberInfo {
     char* name;
     uint32_t id;
     uint32_t offset;
-    uint32_t matrix_stride; 
+    uint32_t matrix_stride;
 } LaharSPVMemberInfo;
 
 struct LaharSPVTypeInfo {
@@ -6102,7 +6292,7 @@ struct LaharSPVTypeInfo {
     bool is_signed;
     LaharSPVMemberInfo* members;
     uint32_t tree_size;
-}; 
+};
 
 struct LaharSPVDescriptorSize {
     uint32_t set;
@@ -6148,15 +6338,15 @@ struct LaharSPVDescriptorSize {
 
 bool __lahar_spv_op_is_debug(uint16_t opcode) {
     switch (opcode) {
-        case LAHAR_SPV_OP_SOURCE_CONTINUED: 
-        case LAHAR_SPV_OP_SOURCE: 
-        case LAHAR_SPV_OP_SOURCE_EXTENSION: 
-        case LAHAR_SPV_OP_NAME: 
-        case LAHAR_SPV_OP_MEMBER_NAME: 
-        case LAHAR_SPV_OP_STRING: 
-        case LAHAR_SPV_OP_LINE: 
-        case LAHAR_SPV_OP_NO_LINE: 
-        case LAHAR_SPV_OP_MODULE_PROCESSED: 
+        case LAHAR_SPV_OP_SOURCE_CONTINUED:
+        case LAHAR_SPV_OP_SOURCE:
+        case LAHAR_SPV_OP_SOURCE_EXTENSION:
+        case LAHAR_SPV_OP_NAME:
+        case LAHAR_SPV_OP_MEMBER_NAME:
+        case LAHAR_SPV_OP_STRING:
+        case LAHAR_SPV_OP_LINE:
+        case LAHAR_SPV_OP_NO_LINE:
+        case LAHAR_SPV_OP_MODULE_PROCESSED:
             return true;
         default:
             return false;
@@ -6175,14 +6365,14 @@ bool __lahar_spv_op_is_debug(uint16_t opcode) {
 
 bool __lahar_spv_op_is_annotation(uint16_t opcode) {
     switch (opcode) {
-        case LAHAR_SPV_OP_DECORATE: 
-        case LAHAR_SPV_OP_MEMBER_DECORATE: 
-        case LAHAR_SPV_OP_DECORATION_GROUP: 
-        case LAHAR_SPV_OP_GROUP_DECORATE: 
-        case LAHAR_SPV_OP_GROUP_MEMBER_DECORATE: 
-        case LAHAR_SPV_OP_DECORATE_ID: 
-        case LAHAR_SPV_OP_DECORATE_STRING: 
-        case LAHAR_SPV_OP_MEMBER_DECORATE_STRING: 
+        case LAHAR_SPV_OP_DECORATE:
+        case LAHAR_SPV_OP_MEMBER_DECORATE:
+        case LAHAR_SPV_OP_DECORATION_GROUP:
+        case LAHAR_SPV_OP_GROUP_DECORATE:
+        case LAHAR_SPV_OP_GROUP_MEMBER_DECORATE:
+        case LAHAR_SPV_OP_DECORATE_ID:
+        case LAHAR_SPV_OP_DECORATE_STRING:
+        case LAHAR_SPV_OP_MEMBER_DECORATE_STRING:
             return true;
         default:
             return false;
@@ -6198,11 +6388,11 @@ bool __lahar_spv_op_is_annotation(uint16_t opcode) {
 
 bool __lahar_spv_op_is_extension(uint16_t opcode) {
     switch (opcode) {
-        case LAHAR_SPV_OP_EXTENSION: 
-        case LAHAR_SPV_OP_EXT_INST_IMPORT: 
-        case LAHAR_SPV_OP_EXT_INST: 
-        case LAHAR_SPV_OP_EXT_INST_WITH_FORWARD_REFS_KHR: 
-        case LAHAR_SPV_OP_CONDITIONAL_EXTENSION_INTEL: 
+        case LAHAR_SPV_OP_EXTENSION:
+        case LAHAR_SPV_OP_EXT_INST_IMPORT:
+        case LAHAR_SPV_OP_EXT_INST:
+        case LAHAR_SPV_OP_EXT_INST_WITH_FORWARD_REFS_KHR:
+        case LAHAR_SPV_OP_CONDITIONAL_EXTENSION_INTEL:
             return true;
         default:
             return false;
@@ -6221,13 +6411,13 @@ bool __lahar_spv_op_is_extension(uint16_t opcode) {
 
 bool __lahar_spv_op_is_mode_setting(uint16_t opcode) {
     switch (opcode) {
-        case LAHAR_SPV_OP_MEMORY_MODEL: 
-        case LAHAR_SPV_OP_ENTRY_POINT: 
-        case LAHAR_SPV_OP_EXECUTION_MODE: 
-        case LAHAR_SPV_OP_CAPABILITY: 
-        case LAHAR_SPV_OP_EXECUTION_MODE_ID: 
-        case LAHAR_SPV_OP_CONDITIONAL_ENTRY_POINT_INTEL: 
-        case LAHAR_SPV_OP_CONDITIONAL_CAPABILITY: 
+        case LAHAR_SPV_OP_MEMORY_MODEL:
+        case LAHAR_SPV_OP_ENTRY_POINT:
+        case LAHAR_SPV_OP_EXECUTION_MODE:
+        case LAHAR_SPV_OP_CAPABILITY:
+        case LAHAR_SPV_OP_EXECUTION_MODE_ID:
+        case LAHAR_SPV_OP_CONDITIONAL_ENTRY_POINT_INTEL:
+        case LAHAR_SPV_OP_CONDITIONAL_CAPABILITY:
             return true;
         default:
             return false;
@@ -6275,43 +6465,43 @@ bool __lahar_spv_op_is_mode_setting(uint16_t opcode) {
 
 bool __lahar_spv_op_is_type_declaration(uint16_t opcode) {
     switch (opcode) {
-        case LAHAR_SPV_OP_TYPE_VOID: 
-        case LAHAR_SPV_OP_TYPE_BOOL: 
-        case LAHAR_SPV_OP_TYPE_INT: 
-        case LAHAR_SPV_OP_TYPE_FLOAT: 
-        case LAHAR_SPV_OP_TYPE_VECTOR: 
-        case LAHAR_SPV_OP_TYPE_MATRIX: 
-        case LAHAR_SPV_OP_TYPE_IMAGE: 
-        case LAHAR_SPV_OP_TYPE_SAMPLER: 
-        case LAHAR_SPV_OP_TYPE_SAMPLED_IMAGE: 
-        case LAHAR_SPV_OP_TYPE_ARRAY: 
-        case LAHAR_SPV_OP_TYPE_RUNTIME_ARRAY: 
-        case LAHAR_SPV_OP_TYPE_STRUCT: 
-        case LAHAR_SPV_OP_TYPE_OPAQUE: 
-        case LAHAR_SPV_OP_TYPE_POINTER: 
-        case LAHAR_SPV_OP_TYPE_FUNCTION: 
-        case LAHAR_SPV_OP_TYPE_EVENT: 
-        case LAHAR_SPV_OP_TYPE_DEVICE_EVENT: 
-        case LAHAR_SPV_OP_TYPE_RESERVE_ID: 
-        case LAHAR_SPV_OP_TYPE_QUEUE: 
-        case LAHAR_SPV_OP_TYPE_PIPE: 
-        case LAHAR_SPV_OP_TYPE_FORWARD_POINTER: 
-        case LAHAR_SPV_OP_TYPE_PIPE_STORAGE: 
-        case LAHAR_SPV_OP_TYPE_NAMED_BARRIER: 
-        case LAHAR_SPV_OP_TYPE_TENSOR_ARM: 
-        case LAHAR_SPV_OP_TYPE_GRAPH_ARM: 
-        case LAHAR_SPV_OP_TYPE_UNTYPED_POINTER_KHR: 
-        case LAHAR_SPV_OP_TYPE_COOPERATIVE_MATRIX_KHR: 
-        case LAHAR_SPV_OP_TYPE_RAY_QUERY_KHR: 
-        case LAHAR_SPV_OP_TYPE_HIT_OBJECT_NV: 
-        case LAHAR_SPV_OP_TYPE_COOPERATIVE_VECTOR_NV: 
-        case LAHAR_SPV_OP_TYPE_ACCELERATION_STRUCTURE_KHR: 
-        case LAHAR_SPV_OP_TYPE_COOPERATIVE_MATRIX_NV: 
-        case LAHAR_SPV_OP_TYPE_TENSOR_LAYOUT_NV: 
-        case LAHAR_SPV_OP_TYPE_TENSOR_VIEW_NV: 
-        case LAHAR_SPV_OP_TYPE_BUFFER_SURFACE_INTEL: 
-        case LAHAR_SPV_OP_TYPE_STRUCT_CONTINUED: 
-        case LAHAR_SPV_OP_TYPE_TASK_SEQUENCE_INTEL: 
+        case LAHAR_SPV_OP_TYPE_VOID:
+        case LAHAR_SPV_OP_TYPE_BOOL:
+        case LAHAR_SPV_OP_TYPE_INT:
+        case LAHAR_SPV_OP_TYPE_FLOAT:
+        case LAHAR_SPV_OP_TYPE_VECTOR:
+        case LAHAR_SPV_OP_TYPE_MATRIX:
+        case LAHAR_SPV_OP_TYPE_IMAGE:
+        case LAHAR_SPV_OP_TYPE_SAMPLER:
+        case LAHAR_SPV_OP_TYPE_SAMPLED_IMAGE:
+        case LAHAR_SPV_OP_TYPE_ARRAY:
+        case LAHAR_SPV_OP_TYPE_RUNTIME_ARRAY:
+        case LAHAR_SPV_OP_TYPE_STRUCT:
+        case LAHAR_SPV_OP_TYPE_OPAQUE:
+        case LAHAR_SPV_OP_TYPE_POINTER:
+        case LAHAR_SPV_OP_TYPE_FUNCTION:
+        case LAHAR_SPV_OP_TYPE_EVENT:
+        case LAHAR_SPV_OP_TYPE_DEVICE_EVENT:
+        case LAHAR_SPV_OP_TYPE_RESERVE_ID:
+        case LAHAR_SPV_OP_TYPE_QUEUE:
+        case LAHAR_SPV_OP_TYPE_PIPE:
+        case LAHAR_SPV_OP_TYPE_FORWARD_POINTER:
+        case LAHAR_SPV_OP_TYPE_PIPE_STORAGE:
+        case LAHAR_SPV_OP_TYPE_NAMED_BARRIER:
+        case LAHAR_SPV_OP_TYPE_TENSOR_ARM:
+        case LAHAR_SPV_OP_TYPE_GRAPH_ARM:
+        case LAHAR_SPV_OP_TYPE_UNTYPED_POINTER_KHR:
+        case LAHAR_SPV_OP_TYPE_COOPERATIVE_MATRIX_KHR:
+        case LAHAR_SPV_OP_TYPE_RAY_QUERY_KHR:
+        case LAHAR_SPV_OP_TYPE_HIT_OBJECT_NV:
+        case LAHAR_SPV_OP_TYPE_COOPERATIVE_VECTOR_NV:
+        case LAHAR_SPV_OP_TYPE_ACCELERATION_STRUCTURE_KHR:
+        case LAHAR_SPV_OP_TYPE_COOPERATIVE_MATRIX_NV:
+        case LAHAR_SPV_OP_TYPE_TENSOR_LAYOUT_NV:
+        case LAHAR_SPV_OP_TYPE_TENSOR_VIEW_NV:
+        case LAHAR_SPV_OP_TYPE_BUFFER_SURFACE_INTEL:
+        case LAHAR_SPV_OP_TYPE_STRUCT_CONTINUED:
+        case LAHAR_SPV_OP_TYPE_TASK_SEQUENCE_INTEL:
             return true;
         default:
             return false;
@@ -6354,7 +6544,7 @@ bool __lahar_spv_v1_var_lookup_is_builtin(const LaharSPVInfo* info, uint32_t var
     for (uint64_t i = info->section_offsets.annotations; i < info->section_offsets.types;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = word >> 16;
+        const uint16_t word_count = (uint16_t)word >> 16;
 
         if (opcode == LAHAR_SPV_OP_DECORATE) {
             const uint32_t decorated_target = code[i + 1];
@@ -6382,7 +6572,7 @@ bool __lahar_spv_v1_lookup_is_bufferblock(const LaharSPVInfo* info, uint32_t typ
     for (uint64_t i = info->section_offsets.annotations; i < info->section_offsets.types;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = word >> 16;
+        const uint16_t word_count = (uint16_t)word >> 16;
 
         if (opcode == LAHAR_SPV_OP_DECORATE) {
             const uint32_t decorated_target = code[i + 1];
@@ -6412,7 +6602,7 @@ uint32_t __lahar_spv_v1_lookup_input_location(const LaharSPVInfo* info, uint32_t
     for (uint64_t i = info->section_offsets.annotations; i < info->section_offsets.types;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = word >> 16;
+        const uint16_t word_count = (uint16_t)word >> 16;
 
         if (opcode == LAHAR_SPV_OP_DECORATE) {
             const uint32_t target = code[i + 1];
@@ -6421,7 +6611,7 @@ uint32_t __lahar_spv_v1_lookup_input_location(const LaharSPVInfo* info, uint32_t
             if (
                 target != input_id ||
                 deco_type != LAHAR_SPV_DECORATION_LOCATION
-            ) { 
+            ) {
                 i += word_count; continue;
             }
 
@@ -6443,7 +6633,7 @@ uint32_t __lahar_spv_v1_lookup_type_array_stride(const LaharSPVInfo* info, uint3
     for (uint64_t i = info->section_offsets.annotations; i < info->section_offsets.types;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = word >> 16;
+        const uint16_t word_count = (uint16_t)word >> 16;
 
         if (opcode == LAHAR_SPV_OP_DECORATE) {
             const uint32_t target = code[i + 1];
@@ -6471,7 +6661,7 @@ const char* __lahar_spv_v1_lookup_id_name(const LaharSPVInfo* info, uint32_t var
     for (uint64_t i = info->section_offsets.debug; i < info->section_offsets.annotations;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = word >> 16;
+        const uint16_t word_count = (uint16_t)word >> 16;
 
         if (opcode == LAHAR_SPV_OP_NAME) {
             const uint32_t target = code[i + 1];
@@ -6497,7 +6687,7 @@ uint32_t __lahar_spv_v1_lookup_set_binding(const LaharSPVInfo* info, uint32_t va
     for (uint64_t i = info->section_offsets.annotations; i < info->section_offsets.types;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = word >> 16;
+        const uint16_t word_count = (uint16_t)word >> 16;
 
         if (opcode == LAHAR_SPV_OP_DECORATE) {
             const uint32_t decorated_target = code[i + 1];
@@ -6545,7 +6735,7 @@ uint32_t __lahar_spv_v1_lookup_member_offset(const LaharSPVInfo* info, uint32_t 
     for (uint64_t i = info->section_offsets.annotations; i < info->section_offsets.types;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = word >> 16;
+        const uint16_t word_count = (uint16_t)word >> 16;
 
         if (opcode == LAHAR_SPV_OP_MEMBER_DECORATE) {
             const uint32_t struct_target = code[i + 1];
@@ -6553,7 +6743,7 @@ uint32_t __lahar_spv_v1_lookup_member_offset(const LaharSPVInfo* info, uint32_t 
             const uint32_t deco_type = code[i + 3];
 
             if (
-                struct_target == struct_type_id && 
+                struct_target == struct_type_id &&
                 target_member_index == member_index &&
                 deco_type == LAHAR_SPV_DECORATION_OFFSET
             ) {
@@ -6576,7 +6766,7 @@ uint32_t __lahar_spv_v1_lookup_member_matrix_stride(const LaharSPVInfo* info, ui
     for (uint64_t i = info->section_offsets.annotations; i < info->section_offsets.types;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = word >> 16;
+        const uint16_t word_count = (uint16_t)word >> 16;
 
         if (opcode == LAHAR_SPV_OP_MEMBER_DECORATE) {
             const uint32_t struct_target = code[i + 1];
@@ -6584,7 +6774,7 @@ uint32_t __lahar_spv_v1_lookup_member_matrix_stride(const LaharSPVInfo* info, ui
             const uint32_t deco_type = code[i + 3];
 
             if (
-                struct_target == struct_type_id && 
+                struct_target == struct_type_id &&
                 target_member_index == member_index &&
                 deco_type == LAHAR_SPV_DECORATION_MATRIX_STRIDE
             ) {
@@ -6611,7 +6801,7 @@ const char* __lahar_spv_v1_lookup_member_name(const LaharSPVInfo* info, uint32_t
     for (uint64_t i = info->section_offsets.debug; i < info->section_offsets.annotations;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = word >> 16;
+        const uint16_t word_count = (uint16_t)word >> 16;
 
         if (opcode == LAHAR_SPV_OP_MEMBER_NAME) {
             const uint32_t target_struct = code[i + 1];
@@ -6637,7 +6827,7 @@ uint32_t __lahar_spv_v1_lookup_constant(const LaharSPVInfo* info, uint32_t const
     for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = word >> 16;
+        const uint16_t word_count = (uint16_t)word >> 16;
 
         if (
             opcode == LAHAR_SPV_OP_CONSTANT ||
@@ -6666,13 +6856,13 @@ uint32_t __lahar_spv_v1_lookup_constant(const LaharSPVInfo* info, uint32_t const
  */
 LaharSPVTypeInfo* __lahar_spv_get_type(const LaharSPVInfo* info, uint32_t id) {
     for (uint32_t i = 0; i < info->type_count; i++) {
-        if (info->type_table[i].id == id) { 
+        if (info->type_table[i].id == id) {
 
             if (info->type_table[i].type == LAHAR_SVT_POINTER) {
                 return __lahar_spv_get_type(info, info->type_table[i].component_type);
             }
             else {
-                return &info->type_table[i]; 
+                return &info->type_table[i];
             }
 
         }
@@ -6782,7 +6972,7 @@ uint32_t __lahar_spv_type_size_recurse(
                 return type->size_components * __lahar_spv_type_size_recurse(info, inner_type, NULL, include_padding);
             }
 
-        case LAHAR_SVT_STRUCT: 
+        case LAHAR_SVT_STRUCT:
         {
             const LaharSPVMemberInfo* last_member = &type->members[type->size_components - 1];
             const LaharSPVTypeInfo* inner_type = __lahar_spv_get_type(info, last_member->id);
@@ -6916,7 +7106,7 @@ uint32_t __lahar_spv_v1_build_section_offsets(LaharSPVInfo* info) {
     do {
         uint32_t word = code[index];
         uint16_t opcode = word & 0xFFFF;
-        uint16_t word_count = word >> 16;
+        uint16_t word_count = (uint16_t)word >> 16;
 
         switch (phase) {
             case 0: { // 0: in the capabilities
@@ -6964,7 +7154,7 @@ uint32_t __lahar_spv_v1_build_section_offsets(LaharSPVInfo* info) {
                     info->section_offsets.types = index;
                 }
             } break;
-            case 5: { // 5: in the type declarations 
+            case 5: { // 5: in the type declarations
                 if (opcode == LAHAR_SPV_OP_FUNCTION) {
                     phase++;
                     info->section_offsets.functions = index;
@@ -7017,7 +7207,7 @@ uint32_t __lahar_spv_v1_count_types(LaharSPVInfo* info) {
     for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
         uint32_t word = code[i];
         uint16_t opcode = word & 0xFFFF;
-        uint16_t word_count = word >> 16;
+        uint16_t word_count = (uint16_t)word >> 16;
 
         if (word_count == 0) { return LAHAR_ERR_MALFORMED_CODE; }
 
@@ -7045,7 +7235,7 @@ uint32_t __lahar_spv_v1_extract_types(LaharSPVInfo* info) {
     info->type_table = (LaharSPVTypeInfo*)lahar_temp_alloc(sizeof(*info->type_table) * info->type_count);
 
     LaharSPVTypeInfo* tinfo = NULL;
-    
+
     info->type_count = 0;
 
     uint32_t err = LAHAR_ERR_SUCCESS;
@@ -7053,7 +7243,7 @@ uint32_t __lahar_spv_v1_extract_types(LaharSPVInfo* info) {
     for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
         uint32_t word = code[i];
         uint16_t opcode = word & 0xFFFF;
-        uint16_t word_count = word >> 16;
+        uint16_t word_count = (uint16_t)word >> 16;
 
         switch (opcode) {
             case LAHAR_SPV_OP_TYPE_VOID: {
@@ -7284,7 +7474,7 @@ uint32_t __lahar_spv_v1_extract_types(LaharSPVInfo* info) {
                     if (err != LAHAR_ERR_ID_NOT_FOUND) {
                         return err;
                     }
-                }                
+                }
 
                 tinfo->component_type = component_id;
                 tinfo->size_bytes = tinfo->array_stride * tinfo->size_components;
@@ -7300,7 +7490,7 @@ uint32_t __lahar_spv_v1_extract_types(LaharSPVInfo* info) {
                     if (err != LAHAR_ERR_ID_NOT_FOUND) {
                         return err;
                     }
-                }                
+                }
 
                 const uint32_t component_id = code[i + 2];
 
@@ -7371,7 +7561,7 @@ uint32_t __lahar_spv_v1_count_unique_descriptor_slots(
     for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = word >> 16;
+        const uint16_t word_count = (uint16_t)word >> 16;
 
         // found a var
         if (opcode == LAHAR_SPV_OP_VARIABLE) {
@@ -7391,7 +7581,7 @@ uint32_t __lahar_spv_v1_count_unique_descriptor_slots(
             uint32_t set = UINT32_MAX, binding = UINT32_MAX;
             uint32_t err = __lahar_spv_v1_lookup_set_binding(info, var_id, &set, &binding);
 
-            if (err) { 
+            if (err) {
                 if (err == LAHAR_ERR_ID_NOT_FOUND) { return LAHAR_ERR_MALFORMED_CODE; }
                 else { return err; }
             }
@@ -7416,7 +7606,7 @@ uint32_t __lahar_spv_v1_count_unique_descriptor_slots(
             // We haven't, so create info for it
             LaharSPVDescriptorSize* desc_size = (LaharSPVDescriptorSize*)lahar_temp_alloc_aligned(
                 sizeof(*slot_array),
-                _Alignof(LaharSPVDescriptorSize)
+                LAHAR_ALIGNOF(LaharSPVDescriptorSize)
             );
 
             desc_size->set = set;
@@ -7455,7 +7645,7 @@ void __lahar_spv_v1_count_input_slots(const LaharSPVInfo* info, uint32_t* count_
     for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = word >> 16;
+        const uint16_t word_count = (uint16_t)word >> 16;
 
         if (opcode == LAHAR_SPV_OP_VARIABLE) {
             //const uint32_t var_type = code[i + 1];
@@ -7469,7 +7659,7 @@ void __lahar_spv_v1_count_input_slots(const LaharSPVInfo* info, uint32_t* count_
                 *count_out += 1;
             }
         }
-        
+
         i += word_count;
     }
 }
@@ -7484,7 +7674,7 @@ uint32_t __lahar_spv_v1_count_push_contant_slots(LaharSPVInfo* info, uint32_t* c
     for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = word >> 16;
+        const uint16_t word_count = (uint16_t)word >> 16;
 
         if (opcode == LAHAR_SPV_OP_VARIABLE) {
             const uint32_t var_type = code[i + 1];
@@ -7505,7 +7695,7 @@ uint32_t __lahar_spv_v1_count_push_contant_slots(LaharSPVInfo* info, uint32_t* c
             *saw = true;
             *count_out = push_block_type->tree_size;
         }
-        
+
         i += word_count;
     }
 
@@ -7523,7 +7713,7 @@ uint32_t __lahar_spv_v1_extract_inputs(const LaharSPVInfo* info, LaharShaderVarI
     for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = word >> 16;
+        const uint16_t word_count = (uint16_t)word >> 16;
 
         if (opcode == LAHAR_SPV_OP_VARIABLE) {
             const uint32_t var_type = code[i + 1];
@@ -7644,7 +7834,7 @@ uint32_t __lahar_spv_v1_extract_subvars(
             var->child_vars_begin = UINT32_MAX;
             var->child_vars_end = UINT32_MAX;
             return LAHAR_ERR_SUCCESS;
-        } 
+        }
 
         const uint32_t start = *var_count;
         const uint32_t end = start + type_info->size_components;
@@ -7734,7 +7924,7 @@ uint32_t __lahar_spv_v1_extract_descriptors(LaharSPVInfo* info, LaharShaderVarIn
     for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = word >> 16;
+        const uint16_t word_count = (uint16_t)word >> 16;
 
         if (opcode == LAHAR_SPV_OP_VARIABLE) {
             const uint32_t var_type = code[i + 1];
@@ -7797,7 +7987,7 @@ uint32_t __lahar_spv_v1_extract_descriptors(LaharSPVInfo* info, LaharShaderVarIn
                 // have to read the decoration to know if it's an SSBO in older spirv
                 // in newer spirv, this deco doesn't exist, so we'll correctly
                 // match it by the storage class instead
-                
+
                 if (__lahar_spv_v1_lookup_is_bufferblock(info, descriptor_type->id)) {
                     descriptor_var->storage_class = LAHAR_SVSC_STORAGE_BUFFER;
                 }
@@ -7857,7 +8047,7 @@ uint32_t __lahar_spv_v1_extract_push_block(LaharSPVInfo* info, LaharShaderVarInf
     for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = word >> 16;
+        const uint16_t word_count = (uint16_t)word >> 16;
 
         if (opcode == LAHAR_SPV_OP_VARIABLE) {
             const uint32_t var_type = code[i + 1];
@@ -7999,7 +8189,7 @@ void __lahar_shader_introspection_print_recurse(const LaharShaderVarInfo* infos,
             default:
                 break;
         }
-    } 
+    }
     else {
         const LaharShaderVarInfo* parent_var = info->parent_var != UINT32_MAX ? &infos[info->parent_var] : NULL;
 
@@ -8052,7 +8242,7 @@ uint32_t lahar_shader_introspect(
 
     uint32_t input_slot_count = 0;
     uint32_t push_slot_count = 0;
-    
+
     uint32_t descriptor_count = 0;
     LaharSPVDescriptorSize* unique_descriptors = NULL;
 
@@ -8077,7 +8267,7 @@ uint32_t lahar_shader_introspect(
         info->stage = &stages[i];
 
         const LaharShaderStage* stage = &stages[i];
-        lahar_trace("Doing first pass of %s stage", __lahar_shader_stage_name(stage)); 
+        lahar_trace("Doing first pass of %s stage", __lahar_shader_stage_name(stage));
 
         if (__lahar_shader_stage_validate_spv_header((const uint32_t*)stage->code) != LAHAR_ERR_SUCCESS) {
             lahar_trace("Shader stage had invalid SPIR-V header");
@@ -8104,7 +8294,7 @@ uint32_t lahar_shader_introspect(
 
     for (uint32_t i = 0; i < num_stages; i++) {
         LaharSPVInfo* info = &stage_infos[i];
-        lahar_trace("Doing second pass of %s stage", __lahar_shader_stage_name(info->stage)); 
+        lahar_trace("Doing second pass of %s stage", __lahar_shader_stage_name(info->stage));
 
         if (info->stage->stage & VK_SHADER_STAGE_VERTEX_BIT) {
             __lahar_spv_v1_count_input_slots(info, &input_slot_count);
@@ -8155,7 +8345,7 @@ uint32_t lahar_shader_introspect(
         LaharSPVInfo* info = &stage_infos[i];
 
         if (info->stage->stage & VK_SHADER_STAGE_VERTEX_BIT) {
-            lahar_trace("Reading vertex inputs"); 
+            lahar_trace("Reading vertex inputs");
             if ((err = __lahar_spv_v1_extract_inputs(info, infos, &produced_info_count))) {
                 lahar_trace("Failed to read inputs");
                 goto cleanup;
@@ -8169,7 +8359,7 @@ uint32_t lahar_shader_introspect(
         LaharSPVInfo* info = &stage_infos[i];
 
         if ((err = __lahar_spv_v1_extract_descriptors(info, infos, &produced_info_count))) {
-            lahar_trace("Failed to extract descriptors from %s stage", __lahar_shader_stage_name(info->stage)); 
+            lahar_trace("Failed to extract descriptors from %s stage", __lahar_shader_stage_name(info->stage));
             goto cleanup;
         }
     }
@@ -8248,7 +8438,7 @@ const char* lahar_shader_var_type_string(LaharShaderVarType svt) {
 }
 
 const char* lahar_vkformat_string(VkFormat format) {
-    switch (format) {
+   switch (format) {
         case VK_FORMAT_UNDEFINED: return "VK_FORMAT_UNDEFINED";
         case VK_FORMAT_R4G4_UNORM_PACK8: return "VK_FORMAT_R4G4_UNORM_PACK8";
         case VK_FORMAT_R4G4B4A4_UNORM_PACK16: return "VK_FORMAT_R4G4B4A4_UNORM_PACK16";
@@ -8434,6 +8624,9 @@ const char* lahar_vkformat_string(VkFormat format) {
         case VK_FORMAT_ASTC_12x10_SRGB_BLOCK: return "VK_FORMAT_ASTC_12x10_SRGB_BLOCK";
         case VK_FORMAT_ASTC_12x12_UNORM_BLOCK: return "VK_FORMAT_ASTC_12x12_UNORM_BLOCK";
         case VK_FORMAT_ASTC_12x12_SRGB_BLOCK: return "VK_FORMAT_ASTC_12x12_SRGB_BLOCK";
+
+    #if defined(VK_VERSION_1_1)
+        /* Core Vulkan 1.1 */
         case VK_FORMAT_G8B8G8R8_422_UNORM: return "VK_FORMAT_G8B8G8R8_422_UNORM";
         case VK_FORMAT_B8G8R8G8_422_UNORM: return "VK_FORMAT_B8G8R8G8_422_UNORM";
         case VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM: return "VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM";
@@ -8468,6 +8661,10 @@ const char* lahar_vkformat_string(VkFormat format) {
         case VK_FORMAT_G16_B16_R16_3PLANE_422_UNORM: return "VK_FORMAT_G16_B16_R16_3PLANE_422_UNORM";
         case VK_FORMAT_G16_B16R16_2PLANE_422_UNORM: return "VK_FORMAT_G16_B16R16_2PLANE_422_UNORM";
         case VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM: return "VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM";
+    #endif
+
+    #if defined(VK_VERSION_1_3)
+        /* Core Vulkan 1.3 */
         case VK_FORMAT_G8_B8R8_2PLANE_444_UNORM: return "VK_FORMAT_G8_B8R8_2PLANE_444_UNORM";
         case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_444_UNORM_3PACK16: return "VK_FORMAT_G10X6_B10X6R10X6_2PLANE_444_UNORM_3PACK16";
         case VK_FORMAT_G12X4_B12X4R12X4_2PLANE_444_UNORM_3PACK16: return "VK_FORMAT_G12X4_B12X4R12X4_2PLANE_444_UNORM_3PACK16";
@@ -8488,95 +8685,20 @@ const char* lahar_vkformat_string(VkFormat format) {
         case VK_FORMAT_ASTC_10x10_SFLOAT_BLOCK: return "VK_FORMAT_ASTC_10x10_SFLOAT_BLOCK";
         case VK_FORMAT_ASTC_12x10_SFLOAT_BLOCK: return "VK_FORMAT_ASTC_12x10_SFLOAT_BLOCK";
         case VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK: return "VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK";
+    #endif
+
+    #if defined(VK_VERSION_1_4)
+        /* Core Vulkan 1.4 */
         case VK_FORMAT_A1B5G5R5_UNORM_PACK16: return "VK_FORMAT_A1B5G5R5_UNORM_PACK16";
         case VK_FORMAT_A8_UNORM: return "VK_FORMAT_A8_UNORM";
-        case VK_FORMAT_PVRTC1_2BPP_UNORM_BLOCK_IMG: return "VK_FORMAT_PVRTC1_2BPP_UNORM_BLOCK_IMG";
-        case VK_FORMAT_PVRTC1_4BPP_UNORM_BLOCK_IMG: return "VK_FORMAT_PVRTC1_4BPP_UNORM_BLOCK_IMG";
-        case VK_FORMAT_PVRTC2_2BPP_UNORM_BLOCK_IMG: return "VK_FORMAT_PVRTC2_2BPP_UNORM_BLOCK_IMG";
-        case VK_FORMAT_PVRTC2_4BPP_UNORM_BLOCK_IMG: return "VK_FORMAT_PVRTC2_4BPP_UNORM_BLOCK_IMG";
-        case VK_FORMAT_PVRTC1_2BPP_SRGB_BLOCK_IMG: return "VK_FORMAT_PVRTC1_2BPP_SRGB_BLOCK_IMG";
-        case VK_FORMAT_PVRTC1_4BPP_SRGB_BLOCK_IMG: return "VK_FORMAT_PVRTC1_4BPP_SRGB_BLOCK_IMG";
-        case VK_FORMAT_PVRTC2_2BPP_SRGB_BLOCK_IMG: return "VK_FORMAT_PVRTC2_2BPP_SRGB_BLOCK_IMG";
-        case VK_FORMAT_PVRTC2_4BPP_SRGB_BLOCK_IMG: return "VK_FORMAT_PVRTC2_4BPP_SRGB_BLOCK_IMG";
-        case VK_FORMAT_R8_BOOL_ARM: return "VK_FORMAT_R8_BOOL_ARM";
-        case VK_FORMAT_R16G16_SFIXED5_NV: return "VK_FORMAT_R16G16_SFIXED5_NV";
-        case VK_FORMAT_R10X6_UINT_PACK16_ARM: return "VK_FORMAT_R10X6_UINT_PACK16_ARM";
-        case VK_FORMAT_R10X6G10X6_UINT_2PACK16_ARM: return "VK_FORMAT_R10X6G10X6_UINT_2PACK16_ARM";
-        case VK_FORMAT_R10X6G10X6B10X6A10X6_UINT_4PACK16_ARM: return "VK_FORMAT_R10X6G10X6B10X6A10X6_UINT_4PACK16_ARM";
-        case VK_FORMAT_R12X4_UINT_PACK16_ARM: return "VK_FORMAT_R12X4_UINT_PACK16_ARM";
-        case VK_FORMAT_R12X4G12X4_UINT_2PACK16_ARM: return "VK_FORMAT_R12X4G12X4_UINT_2PACK16_ARM";
-        case VK_FORMAT_R12X4G12X4B12X4A12X4_UINT_4PACK16_ARM: return "VK_FORMAT_R12X4G12X4B12X4A12X4_UINT_4PACK16_ARM";
-        case VK_FORMAT_R14X2_UINT_PACK16_ARM: return "VK_FORMAT_R14X2_UINT_PACK16_ARM";
-        case VK_FORMAT_R14X2G14X2_UINT_2PACK16_ARM: return "VK_FORMAT_R14X2G14X2_UINT_2PACK16_ARM";
-        case VK_FORMAT_R14X2G14X2B14X2A14X2_UINT_4PACK16_ARM: return "VK_FORMAT_R14X2G14X2B14X2A14X2_UINT_4PACK16_ARM";
-        case VK_FORMAT_R14X2_UNORM_PACK16_ARM: return "VK_FORMAT_R14X2_UNORM_PACK16_ARM";
-        case VK_FORMAT_R14X2G14X2_UNORM_2PACK16_ARM: return "VK_FORMAT_R14X2G14X2_UNORM_2PACK16_ARM";
-        case VK_FORMAT_R14X2G14X2B14X2A14X2_UNORM_4PACK16_ARM: return "VK_FORMAT_R14X2G14X2B14X2A14X2_UNORM_4PACK16_ARM";
-        case VK_FORMAT_G14X2_B14X2R14X2_2PLANE_420_UNORM_3PACK16_ARM: return "VK_FORMAT_G14X2_B14X2R14X2_2PLANE_420_UNORM_3PACK16_ARM";
-        case VK_FORMAT_G14X2_B14X2R14X2_2PLANE_422_UNORM_3PACK16_ARM: return "VK_FORMAT_G14X2_B14X2R14X2_2PLANE_422_UNORM_3PACK16_ARM";
-        /* These all complain about duplicates
-        case VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK_EXT";
-        case VK_FORMAT_ASTC_5x4_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_5x4_SFLOAT_BLOCK_EXT";
-        case VK_FORMAT_ASTC_5x5_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_5x5_SFLOAT_BLOCK_EXT";
-        case VK_FORMAT_ASTC_6x5_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_6x5_SFLOAT_BLOCK_EXT";
-        case VK_FORMAT_ASTC_6x6_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_6x6_SFLOAT_BLOCK_EXT";
-        case VK_FORMAT_ASTC_8x5_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_8x5_SFLOAT_BLOCK_EXT";
-        case VK_FORMAT_ASTC_8x6_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_8x6_SFLOAT_BLOCK_EXT";
-        case VK_FORMAT_ASTC_8x8_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_8x8_SFLOAT_BLOCK_EXT";
-        case VK_FORMAT_ASTC_10x5_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_10x5_SFLOAT_BLOCK_EXT";
-        case VK_FORMAT_ASTC_10x6_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_10x6_SFLOAT_BLOCK_EXT";
-        case VK_FORMAT_ASTC_10x8_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_10x8_SFLOAT_BLOCK_EXT";
-        case VK_FORMAT_ASTC_10x10_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_10x10_SFLOAT_BLOCK_EXT";
-        case VK_FORMAT_ASTC_12x10_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_12x10_SFLOAT_BLOCK_EXT";
-        case VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK_EXT: return "VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK_EXT";
-        case VK_FORMAT_G8B8G8R8_422_UNORM_KHR: return "VK_FORMAT_G8B8G8R8_422_UNORM_KHR";
-        case VK_FORMAT_B8G8R8G8_422_UNORM_KHR: return "VK_FORMAT_B8G8R8G8_422_UNORM_KHR";
-        case VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM_KHR: return "VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM_KHR";
-        case VK_FORMAT_G8_B8R8_2PLANE_420_UNORM_KHR: return "VK_FORMAT_G8_B8R8_2PLANE_420_UNORM_KHR";
-        case VK_FORMAT_G8_B8_R8_3PLANE_422_UNORM_KHR: return "VK_FORMAT_G8_B8_R8_3PLANE_422_UNORM_KHR";
-        case VK_FORMAT_G8_B8R8_2PLANE_422_UNORM_KHR: return "VK_FORMAT_G8_B8R8_2PLANE_422_UNORM_KHR";
-        case VK_FORMAT_G8_B8_R8_3PLANE_444_UNORM_KHR: return "VK_FORMAT_G8_B8_R8_3PLANE_444_UNORM_KHR";
-        case VK_FORMAT_R10X6_UNORM_PACK16_KHR: return "VK_FORMAT_R10X6_UNORM_PACK16_KHR";
-        case VK_FORMAT_R10X6G10X6_UNORM_2PACK16_KHR: return "VK_FORMAT_R10X6G10X6_UNORM_2PACK16_KHR";
-        case VK_FORMAT_R10X6G10X6B10X6A10X6_UNORM_4PACK16_KHR: return "VK_FORMAT_R10X6G10X6B10X6A10X6_UNORM_4PACK16_KHR";
-        case VK_FORMAT_G10X6B10X6G10X6R10X6_422_UNORM_4PACK16_KHR: return "VK_FORMAT_G10X6B10X6G10X6R10X6_422_UNORM_4PACK16_KHR";
-        case VK_FORMAT_B10X6G10X6R10X6G10X6_422_UNORM_4PACK16_KHR: return "VK_FORMAT_B10X6G10X6R10X6G10X6_422_UNORM_4PACK16_KHR";
-        case VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_420_UNORM_3PACK16_KHR: return "VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_420_UNORM_3PACK16_KHR";
-        case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16_KHR: return "VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16_KHR";
-        case VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_422_UNORM_3PACK16_KHR: return "VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_422_UNORM_3PACK16_KHR";
-        case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_422_UNORM_3PACK16_KHR: return "VK_FORMAT_G10X6_B10X6R10X6_2PLANE_422_UNORM_3PACK16_KHR";
-        case VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_444_UNORM_3PACK16_KHR: return "VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_444_UNORM_3PACK16_KHR";
-        case VK_FORMAT_R12X4_UNORM_PACK16_KHR: return "VK_FORMAT_R12X4_UNORM_PACK16_KHR";
-        case VK_FORMAT_R12X4G12X4_UNORM_2PACK16_KHR: return "VK_FORMAT_R12X4G12X4_UNORM_2PACK16_KHR";
-        case VK_FORMAT_R12X4G12X4B12X4A12X4_UNORM_4PACK16_KHR: return "VK_FORMAT_R12X4G12X4B12X4A12X4_UNORM_4PACK16_KHR";
-        case VK_FORMAT_G12X4B12X4G12X4R12X4_422_UNORM_4PACK16_KHR: return "VK_FORMAT_G12X4B12X4G12X4R12X4_422_UNORM_4PACK16_KHR";
-        case VK_FORMAT_B12X4G12X4R12X4G12X4_422_UNORM_4PACK16_KHR: return "VK_FORMAT_B12X4G12X4R12X4G12X4_422_UNORM_4PACK16_KHR";
-        case VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_420_UNORM_3PACK16_KHR: return "VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_420_UNORM_3PACK16_KHR";
-        case VK_FORMAT_G12X4_B12X4R12X4_2PLANE_420_UNORM_3PACK16_KHR: return "VK_FORMAT_G12X4_B12X4R12X4_2PLANE_420_UNORM_3PACK16_KHR";
-        case VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_422_UNORM_3PACK16_KHR: return "VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_422_UNORM_3PACK16_KHR";
-        case VK_FORMAT_G12X4_B12X4R12X4_2PLANE_422_UNORM_3PACK16_KHR: return "VK_FORMAT_G12X4_B12X4R12X4_2PLANE_422_UNORM_3PACK16_KHR";
-        case VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_444_UNORM_3PACK16_KHR: return "VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_444_UNORM_3PACK16_KHR";
-        case VK_FORMAT_G16B16G16R16_422_UNORM_KHR: return "VK_FORMAT_G16B16G16R16_422_UNORM_KHR";
-        case VK_FORMAT_B16G16R16G16_422_UNORM_KHR: return "VK_FORMAT_B16G16R16G16_422_UNORM_KHR";
-        case VK_FORMAT_G16_B16_R16_3PLANE_420_UNORM_KHR: return "VK_FORMAT_G16_B16_R16_3PLANE_420_UNORM_KHR";
-        case VK_FORMAT_G16_B16R16_2PLANE_420_UNORM_KHR: return "VK_FORMAT_G16_B16R16_2PLANE_420_UNORM_KHR";
-        case VK_FORMAT_G16_B16_R16_3PLANE_422_UNORM_KHR: return "VK_FORMAT_G16_B16_R16_3PLANE_422_UNORM_KHR";
-        case VK_FORMAT_G16_B16R16_2PLANE_422_UNORM_KHR: return "VK_FORMAT_G16_B16R16_2PLANE_422_UNORM_KHR";
-        case VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM_KHR: return "VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM_KHR";
-        case VK_FORMAT_G8_B8R8_2PLANE_444_UNORM_EXT: return "VK_FORMAT_G8_B8R8_2PLANE_444_UNORM_EXT";
-        case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_444_UNORM_3PACK16_EXT: return "VK_FORMAT_G10X6_B10X6R10X6_2PLANE_444_UNORM_3PACK16_EXT";
-        case VK_FORMAT_G12X4_B12X4R12X4_2PLANE_444_UNORM_3PACK16_EXT: return "VK_FORMAT_G12X4_B12X4R12X4_2PLANE_444_UNORM_3PACK16_EXT";
-        case VK_FORMAT_G16_B16R16_2PLANE_444_UNORM_EXT: return "VK_FORMAT_G16_B16R16_2PLANE_444_UNORM_EXT";
-        case VK_FORMAT_A4R4G4B4_UNORM_PACK16_EXT: return "VK_FORMAT_A4R4G4B4_UNORM_PACK16_EXT";
-        case VK_FORMAT_A4B4G4R4_UNORM_PACK16_EXT: return "VK_FORMAT_A4B4G4R4_UNORM_PACK16_EXT";
-        case VK_FORMAT_R16G16_S10_5_NV: return "VK_FORMAT_R16G16_S10_5_NV";
-        case VK_FORMAT_A1B5G5R5_UNORM_PACK16_KHR: return "VK_FORMAT_A1B5G5R5_UNORM_PACK16_KHR";
-        case VK_FORMAT_A8_UNORM_KHR: return "VK_FORMAT_A8_UNORM_KHR";
-        */
-        case VK_FORMAT_MAX_ENUM: return "VK_FORMAT_MAX_ENUM";
+    #endif
+
+    /* Fun fact, there's actually not a super great way to gate extension formats */
+
+    default:
+        return "VK_FORMAT_UNKNOWN";
     }
 
-    return "UNKNOWN_VK_FORMAT";
 }
 
 
@@ -8590,9 +8712,803 @@ const char* lahar_vkformat_string(VkFormat format) {
 
 
 
+#ifndef LAHAR_FL_BLOCK_SIZE
+    #define LAHAR_FL_BLOCK_SIZE (64ull * 1024ull * 1024ull)
+#endif
 
+#ifndef LAHAR_FL_DEDICATED_THRESHOLD
+    #define LAHAR_FL_DEDICATED_THRESHOLD (LAHAR_FL_BLOCK_SIZE / 4ull)
+#endif
 
+struct LaharFlBlock;
+typedef struct LaharFlBlock LaharFlBlock;
 
+struct LaharFlAlloc;
+typedef struct LaharFlAlloc LaharFlAlloc;
+
+/* One suballocation (or hole) inside a block, or a dedicated allocation.
+ * This is what a LaharAllocation actually points at. */
+struct LaharFlAlloc {
+    LaharFlBlock* block;        // Owning block; NULL means dedicated
+    VkDeviceMemory memory;      // Dedicated only; block allocs use block->memory
+    VkDeviceSize offset;        // Offset within the device memory
+    VkDeviceSize size;          // Size (padded to VkMemoryRequirements.size)
+    uint32_t mem_type;          // Memory type index
+    bool is_free;               // Block nodes only: this node is a hole
+    bool is_linear;             // Buffers/linear images vs optimal images
+    const char* tag;            // Optional user name for leak reports
+    void* mapped;               // Dedicated only: lazy persistent map
+    LaharFlAlloc* prev;         // Block: neighbor by offset. Dedicated: list link
+    LaharFlAlloc* next;
+};
+
+struct LaharFlBlock {
+    VkDeviceMemory memory;
+    VkDeviceSize size;
+    VkDeviceSize used;          // Bytes in live allocations
+    uint32_t mem_type;
+    void* mapped;               // Persistent map if host visible, else NULL
+    LaharFlAlloc* head;         // All nodes (free and used), sorted by offset
+};
+
+typedef struct LaharFlPool {
+    LaharFlBlock** blocks;
+    size_t count, cap;
+} LaharFlPool;
+
+typedef struct LaharFlState {
+    LaharFlPool pools[VK_MAX_MEMORY_TYPES];
+    LaharFlAlloc* dedicated_head;
+    uint64_t reserved;
+    uint64_t used;
+    uint64_t live_allocs;
+    uint64_t block_count;
+    uint64_t dedicated_count;
+} LaharFlState;
+
+static LaharFlState __lahar_fl = ZINIT;
+
+static VkDeviceSize __lahar_fl_align_up(VkDeviceSize v, VkDeviceSize a) {
+    return (v + a - 1) & ~(a - 1);
+}
+
+static VkDeviceSize __lahar_fl_align_down(VkDeviceSize v, VkDeviceSize a) {
+    return v & ~(a - 1);
+}
+
+static uint32_t __lahar_fl_popcount(uint32_t v) {
+    uint32_t c = 0;
+    while (v) { c += v & 1; v >>= 1; }
+    return c;
+}
+
+static VkMemoryPropertyFlags __lahar_fl_type_flags(uint32_t mem_type) {
+    return lahar->physdev_info.memprops.memoryTypes[mem_type].propertyFlags;
+}
+
+static bool __lahar_fl_is_coherent(uint32_t mem_type) {
+    return (__lahar_fl_type_flags(mem_type) & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+}
+
+/* Translate a usage class into required/preferred property flags */
+static uint32_t __lahar_fl_usage_flags(LaharMemoryUsage usage, VkMemoryPropertyFlags* required, VkMemoryPropertyFlags* preferred) {
+    switch (usage) {
+        case LAHAR_MU_GPU_ONLY:
+            *required = 0;
+            *preferred = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+            break;
+        case LAHAR_MU_UPLOAD:
+            *required = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+            *preferred = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+            break;
+        case LAHAR_MU_UPLOAD_DEVICE:
+            /* BAR/ReBAR memory when present, plain host visible otherwise */
+            *required = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+            *preferred = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+            break;
+        case LAHAR_MU_READBACK:
+            *required = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+            *preferred = VK_MEMORY_PROPERTY_HOST_CACHED_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+            break;
+        default:
+            return LAHAR_ERR_ILLEGAL_PARAMS;
+    }
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+/* Pick the best memory type from type_bits for the given flags.
+ * Returns LAHAR_ERR_ALLOC_FAILED when no type qualifies. */
+static uint32_t __lahar_fl_find_type(uint32_t type_bits, VkMemoryPropertyFlags required, VkMemoryPropertyFlags preferred, uint32_t* type_out) {
+    const VkPhysicalDeviceMemoryProperties* props = &lahar->physdev_info.memprops;
+
+    uint32_t best = UINT32_MAX;
+    int32_t best_score = -1;
+
+    for (uint32_t i = 0; i < props->memoryTypeCount; i++) {
+        if (!(type_bits & (1u << i))) { continue; }
+
+        VkMemoryPropertyFlags flags = props->memoryTypes[i].propertyFlags;
+        if ((flags & required) != required) { continue; }
+
+        int32_t score = (int32_t)__lahar_fl_popcount(flags & preferred);
+
+        if (score > best_score) {
+            best_score = score;
+            best = i;
+        }
+    }
+
+    if (best == UINT32_MAX) { return LAHAR_ERR_ALLOC_FAILED; }
+
+    *type_out = best;
+    return LAHAR_ERR_SUCCESS;
+}
+
+static LaharFlAlloc* __lahar_fl_new_node(void) {
+    LaharFlAlloc* node = (LaharFlAlloc*)lahar_malloc(sizeof(LaharFlAlloc));
+    if (node) { memset(node, 0, sizeof(*node)); }
+    return node;
+}
+
+/* --------------------------------------------------------------- blocks */
+
+static uint32_t __lahar_fl_block_create(uint32_t mem_type, VkDeviceSize size, LaharFlBlock** out) {
+    LaharFlBlock* block = (LaharFlBlock*)lahar_malloc(sizeof(LaharFlBlock));
+    if (!block) { return LAHAR_ERR_ALLOC_FAILED; }
+    memset(block, 0, sizeof(*block));
+
+    LaharFlAlloc* node = __lahar_fl_new_node();
+    if (!node) { lahar_free(block); return LAHAR_ERR_ALLOC_FAILED; }
+
+    VkMemoryAllocateInfo info = ZINIT;
+    info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    info.allocationSize = size;
+    info.memoryTypeIndex = mem_type;
+
+    if ((lahar->vkresult = vkAllocateMemory(lahar->device, &info, lahar->vkalloc, &block->memory)) != VK_SUCCESS) {
+        lahar_free(node);
+        lahar_free(block);
+        return LAHAR_ERR_VK_ERR;
+    }
+
+    if (__lahar_fl_type_flags(mem_type) & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
+        if ((lahar->vkresult = vkMapMemory(lahar->device, block->memory, 0, VK_WHOLE_SIZE, 0, &block->mapped)) != VK_SUCCESS) {
+            vkFreeMemory(lahar->device, block->memory, lahar->vkalloc);
+            lahar_free(node);
+            lahar_free(block);
+            return LAHAR_ERR_VK_ERR;
+        }
+    }
+
+    block->size = size;
+    block->mem_type = mem_type;
+
+    /* One big hole spanning the whole block */
+    node->block = block;
+    node->size = size;
+    node->is_free = true;
+    block->head = node;
+
+    LaharFlPool* pool = &__lahar_fl.pools[mem_type];
+
+    if (pool->count >= pool->cap) {
+        lahar_vec_expand(pool->blocks, pool->cap) else {
+            vkUnmapMemory(lahar->device, block->memory);
+            vkFreeMemory(lahar->device, block->memory, lahar->vkalloc);
+            lahar_free(node);
+            lahar_free(block);
+            return LAHAR_ERR_ALLOC_FAILED;
+        }
+    }
+
+    pool->blocks[pool->count++] = block;
+
+    __lahar_fl.reserved += size;
+    __lahar_fl.block_count++;
+
+    *out = block;
+    return LAHAR_ERR_SUCCESS;
+}
+
+static void __lahar_fl_block_destroy(LaharFlBlock* block) {
+    LaharFlPool* pool = &__lahar_fl.pools[block->mem_type];
+
+    /* Swap-remove from the pool */
+    for (size_t i = 0; i < pool->count; i++) {
+        if (pool->blocks[i] == block) {
+            pool->blocks[i] = pool->blocks[--pool->count];
+            break;
+        }
+    }
+
+    LaharFlAlloc* node = block->head;
+    while (node) {
+        LaharFlAlloc* next = node->next;
+        lahar_free(node);
+        node = next;
+    }
+
+    if (block->mapped && vkUnmapMemory) {
+        vkUnmapMemory(lahar->device, block->memory);
+    }
+
+    if (vkFreeMemory) {
+        vkFreeMemory(lahar->device, block->memory, lahar->vkalloc);
+    }
+
+    __lahar_fl.reserved -= block->size;
+    __lahar_fl.block_count--;
+
+    lahar_free(block);
+}
+
+/* Attempt to carve a suballocation out of a block. Free-node coalescing is
+ * maintained on free, so a free node's direct neighbors are always used
+ * nodes (or list ends), which keeps the granularity checks local. */
+static bool __lahar_fl_try_place(LaharFlBlock* block, VkDeviceSize size, VkDeviceSize alignment, bool is_linear, LaharFlAlloc** out) {
+    const VkDeviceSize gran = lahar->physdev_info.properties.limits.bufferImageGranularity;
+
+    for (LaharFlAlloc* node = block->head; node; node = node->next) {
+        if (!node->is_free) { continue; }
+
+        VkDeviceSize aligned = __lahar_fl_align_up(node->offset, alignment);
+
+        /* If the previous used neighbor has different linearity and ends on
+         * the same granularity page we'd start on, push to the next page */
+        if (gran > 1 && node->prev && node->prev->is_linear != is_linear) {
+            VkDeviceSize prev_end = node->prev->offset + node->prev->size;
+
+            if ((prev_end - 1) / gran == aligned / gran) {
+                aligned = __lahar_fl_align_up(aligned, gran);
+            }
+        }
+
+        const VkDeviceSize node_end = node->offset + node->size;
+        if (aligned < node->offset || aligned + size > node_end) { continue; }
+
+        /* Same page-sharing check against the next used neighbor */
+        if (gran > 1 && node->next && node->next->is_linear != is_linear) {
+            if ((aligned + size - 1) / gran == node->next->offset / gran) { continue; }
+        }
+
+        const VkDeviceSize front = aligned - node->offset;
+        const VkDeviceSize back = node_end - (aligned + size);
+
+        LaharFlAlloc* alloc = NULL;
+
+        if (front > 0) {
+            /* Keep the original node as the front hole, insert the
+             * allocation after it */
+            alloc = __lahar_fl_new_node();
+            if (!alloc) { return false; }
+
+            alloc->prev = node;
+            alloc->next = node->next;
+            if (node->next) { node->next->prev = alloc; }
+            node->next = alloc;
+
+            node->size = front;
+        }
+        else {
+            /* The allocation starts exactly at the hole, reuse the node */
+            alloc = node;
+        }
+
+        alloc->block = block;
+        alloc->memory = VK_NULL_HANDLE;
+        alloc->offset = aligned;
+        alloc->size = size;
+        alloc->mem_type = block->mem_type;
+        alloc->is_free = false;
+        alloc->is_linear = is_linear;
+        alloc->tag = NULL;
+        alloc->mapped = NULL;
+
+        if (back > 0) {
+            LaharFlAlloc* hole = __lahar_fl_new_node();
+
+            if (!hole) {
+                /* Can't track the tail: give the padding to the allocation.
+                 * Wasteful, but consistent */
+                alloc->size += back;
+            }
+            else {
+                hole->block = block;
+                hole->offset = aligned + size;
+                hole->size = back;
+                hole->is_free = true;
+
+                hole->prev = alloc;
+                hole->next = alloc->next;
+                if (alloc->next) { alloc->next->prev = hole; }
+                alloc->next = hole;
+            }
+        }
+
+        block->used += alloc->size;
+
+        *out = alloc;
+        return true;
+    }
+
+    return false;
+}
+
+/* ---------------------------------------------------------- alloc / free */
+
+static uint32_t __lahar_fl_alloc_dedicated(uint32_t mem_type, VkDeviceSize size, bool is_linear, LaharFlAlloc** out) {
+    LaharFlAlloc* node = __lahar_fl_new_node();
+    if (!node) { return LAHAR_ERR_ALLOC_FAILED; }
+
+    VkMemoryAllocateInfo info = ZINIT;
+    info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    info.allocationSize = size;
+    info.memoryTypeIndex = mem_type;
+
+    if ((lahar->vkresult = vkAllocateMemory(lahar->device, &info, lahar->vkalloc, &node->memory)) != VK_SUCCESS) {
+        lahar_free(node);
+        return LAHAR_ERR_VK_ERR;
+    }
+
+    node->size = size;
+    node->mem_type = mem_type;
+    node->is_linear = is_linear;
+
+    /* Link into the dedicated list for leak tracking */
+    node->next = __lahar_fl.dedicated_head;
+    if (__lahar_fl.dedicated_head) { __lahar_fl.dedicated_head->prev = node; }
+    __lahar_fl.dedicated_head = node;
+
+    __lahar_fl.reserved += size;
+    __lahar_fl.dedicated_count++;
+
+    *out = node;
+    return LAHAR_ERR_SUCCESS;
+}
+
+static uint32_t __lahar_fl_alloc_in_type(uint32_t mem_type, const VkMemoryRequirements* reqs, bool is_linear, LaharFlAlloc** out) {
+    uint32_t err = LAHAR_ERR_SUCCESS;
+
+    if (reqs->size >= LAHAR_FL_DEDICATED_THRESHOLD) {
+        return __lahar_fl_alloc_dedicated(mem_type, reqs->size, is_linear, out);
+    }
+
+    LaharFlPool* pool = &__lahar_fl.pools[mem_type];
+
+    for (size_t i = 0; i < pool->count; i++) {
+        if (__lahar_fl_try_place(pool->blocks[i], reqs->size, reqs->alignment, is_linear, out)) {
+            return LAHAR_ERR_SUCCESS;
+        }
+    }
+
+    LaharFlBlock* block = NULL;
+    if ((err = __lahar_fl_block_create(mem_type, LAHAR_FL_BLOCK_SIZE, &block))) {
+        return err;
+    }
+
+    if (!__lahar_fl_try_place(block, reqs->size, reqs->alignment, is_linear, out)) {
+        /* A fresh block refused the request (pathological alignment).
+         * Fall back to a dedicated allocation */
+        __lahar_fl_block_destroy(block);
+        return __lahar_fl_alloc_dedicated(mem_type, reqs->size, is_linear, out);
+    }
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+/* Find a memory type and allocate, retrying other candidate types if the
+ * driver reports out-of-memory on the preferred one */
+static uint32_t __lahar_fl_allocate(const VkMemoryRequirements* reqs, VkMemoryPropertyFlags required, VkMemoryPropertyFlags preferred, bool is_linear, LaharFlAlloc** out) {
+    uint32_t err = LAHAR_ERR_SUCCESS;
+    uint32_t remaining = reqs->memoryTypeBits;
+
+    while (remaining) {
+        uint32_t mem_type = 0;
+
+        if ((err = __lahar_fl_find_type(remaining, required, preferred, &mem_type))) {
+            return err;
+        }
+
+        err = __lahar_fl_alloc_in_type(mem_type, reqs, is_linear, out);
+
+        if (err == LAHAR_ERR_SUCCESS) {
+            __lahar_fl.used += (*out)->size;
+            __lahar_fl.live_allocs++;
+            return LAHAR_ERR_SUCCESS;
+        }
+
+        const bool vk_oom = err == LAHAR_ERR_VK_ERR &&
+            (lahar->vkresult == VK_ERROR_OUT_OF_DEVICE_MEMORY || lahar->vkresult == VK_ERROR_OUT_OF_HOST_MEMORY);
+
+        if (!vk_oom) { return err; }
+
+        remaining &= ~(1u << mem_type);
+    }
+
+    return LAHAR_ERR_ALLOC_FAILED;
+}
+
+static void __lahar_fl_free_alloc(LaharFlAlloc* node) {
+    __lahar_fl.used -= node->size;
+    __lahar_fl.live_allocs--;
+
+    if (!node->block) {
+        /* Dedicated */
+        if (node->mapped && vkUnmapMemory) {
+            vkUnmapMemory(lahar->device, node->memory);
+        }
+
+        if (vkFreeMemory) {
+            vkFreeMemory(lahar->device, node->memory, lahar->vkalloc);
+        }
+
+        if (node->prev) { node->prev->next = node->next; }
+        else { __lahar_fl.dedicated_head = node->next; }
+        if (node->next) { node->next->prev = node->prev; }
+
+        __lahar_fl.reserved -= node->size;
+        __lahar_fl.dedicated_count--;
+
+        lahar_free(node);
+        return;
+    }
+
+    LaharFlBlock* block = node->block;
+
+    block->used -= node->size;
+    node->is_free = true;
+    node->tag = NULL;
+
+    /* Coalesce with the next hole */
+    if (node->next && node->next->is_free) {
+        LaharFlAlloc* next = node->next;
+
+        node->size += next->size;
+        node->next = next->next;
+        if (next->next) { next->next->prev = node; }
+
+        lahar_free(next);
+    }
+
+    /* Coalesce into the previous hole */
+    if (node->prev && node->prev->is_free) {
+        LaharFlAlloc* prev = node->prev;
+
+        prev->size += node->size;
+        prev->next = node->next;
+        if (node->next) { node->next->prev = prev; }
+
+        lahar_free(node);
+    }
+
+    if (block->used == 0) {
+        __lahar_fl_block_destroy(block);
+    }
+}
+
+/* ------------------------------------------------------- vtable functions */
+
+static uint32_t __lahar_fl_alloc_buffer(void* self, Lahar* lahar_, const VkBufferCreateInfo* info, LaharMemoryUsage usage, VkBuffer* buffer, LaharAllocation* allocation) {
+    if (!self || !lahar_) { return LAHAR_ERR_INVALID_STATE; }
+    if (!info || !buffer || !allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+    uint32_t err = LAHAR_ERR_SUCCESS;
+    VkMemoryPropertyFlags required = 0, preferred = 0;
+
+    if ((err = __lahar_fl_usage_flags(usage, &required, &preferred))) {
+        return err;
+    }
+
+    VkBuffer buf = VK_NULL_HANDLE;
+    if ((lahar_->vkresult = vkCreateBuffer(lahar_->device, info, lahar_->vkalloc, &buf)) != VK_SUCCESS) {
+        return LAHAR_ERR_VK_ERR;
+    }
+
+    VkMemoryRequirements reqs = ZINIT;
+    vkGetBufferMemoryRequirements(lahar_->device, buf, &reqs);
+
+    LaharFlAlloc* node = NULL;
+    if ((err = __lahar_fl_allocate(&reqs, required, preferred, true, &node))) {
+        vkDestroyBuffer(lahar_->device, buf, lahar_->vkalloc);
+        return err;
+    }
+
+    VkDeviceMemory memory = node->block ? node->block->memory : node->memory;
+
+    if ((lahar_->vkresult = vkBindBufferMemory(lahar_->device, buf, memory, node->offset)) != VK_SUCCESS) {
+        __lahar_fl_free_alloc(node);
+        vkDestroyBuffer(lahar_->device, buf, lahar_->vkalloc);
+        return LAHAR_ERR_VK_ERR;
+    }
+
+    *buffer = buf;
+    *allocation = (LaharAllocation)node;
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+static uint32_t __lahar_fl_free_buffer(void* self, Lahar* lahar_, VkBuffer* buffer, LaharAllocation* allocation) {
+    if (!self || !lahar_) { return LAHAR_ERR_INVALID_STATE; }
+    if (!buffer || !allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+    if (*buffer != VK_NULL_HANDLE && vkDestroyBuffer) {
+        vkDestroyBuffer(lahar_->device, *buffer, lahar_->vkalloc);
+    }
+
+    if (*allocation) {
+        __lahar_fl_free_alloc((LaharFlAlloc*)*allocation);
+    }
+
+    *buffer = VK_NULL_HANDLE;
+    *allocation = NULL;
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+static uint32_t __lahar_fl_alloc_img(void* self, Lahar* lahar_, const VkImageCreateInfo* info, VkImage* image, LaharAllocation* allocation) {
+    if (!self || !lahar_) { return LAHAR_ERR_INVALID_STATE; }
+    if (!info || !image || !allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+    uint32_t err = LAHAR_ERR_SUCCESS;
+
+    VkImage img = VK_NULL_HANDLE;
+    if ((lahar_->vkresult = vkCreateImage(lahar_->device, info, lahar_->vkalloc, &img)) != VK_SUCCESS) {
+        return LAHAR_ERR_VK_ERR;
+    }
+
+    VkMemoryRequirements reqs = ZINIT;
+    vkGetImageMemoryRequirements(lahar_->device, img, &reqs);
+
+    const bool is_linear = info->tiling == VK_IMAGE_TILING_LINEAR;
+
+    LaharFlAlloc* node = NULL;
+    if ((err = __lahar_fl_allocate(&reqs, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, is_linear, &node))) {
+        vkDestroyImage(lahar_->device, img, lahar_->vkalloc);
+        return err;
+    }
+
+    VkDeviceMemory memory = node->block ? node->block->memory : node->memory;
+
+    if ((lahar_->vkresult = vkBindImageMemory(lahar_->device, img, memory, node->offset)) != VK_SUCCESS) {
+        __lahar_fl_free_alloc(node);
+        vkDestroyImage(lahar_->device, img, lahar_->vkalloc);
+        return LAHAR_ERR_VK_ERR;
+    }
+
+    *image = img;
+    *allocation = (LaharAllocation)node;
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+static uint32_t __lahar_fl_free_img(void* self, Lahar* lahar_, VkImage* image, LaharAllocation* allocation) {
+    if (!self || !lahar_) { return LAHAR_ERR_INVALID_STATE; }
+    if (!image || !allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+    if (*image != VK_NULL_HANDLE && vkDestroyImage) {
+        vkDestroyImage(lahar_->device, *image, lahar_->vkalloc);
+    }
+
+    if (*allocation) {
+        __lahar_fl_free_alloc((LaharFlAlloc*)*allocation);
+    }
+
+    *image = VK_NULL_HANDLE;
+    *allocation = NULL;
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+static uint32_t __lahar_fl_map(void* self, Lahar* lahar_, LaharAllocation allocation, void** out) {
+    if (!self || !lahar_) { return LAHAR_ERR_INVALID_STATE; }
+    if (!allocation || !out) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+    LaharFlAlloc* node = (LaharFlAlloc*)allocation;
+
+    if (!(__lahar_fl_type_flags(node->mem_type) & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
+        return LAHAR_ERR_INVALID_CONFIGURATION;
+    }
+
+    void* base = NULL;
+
+    if (node->block) {
+        /* Blocks are persistently mapped at creation */
+        base = (uint8_t*)node->block->mapped + node->offset;
+    }
+    else {
+        /* Dedicated allocations map lazily and stay mapped until freed */
+        if (!node->mapped) {
+            if ((lahar_->vkresult = vkMapMemory(lahar_->device, node->memory, 0, VK_WHOLE_SIZE, 0, &node->mapped)) != VK_SUCCESS) {
+                return LAHAR_ERR_VK_ERR;
+            }
+        }
+
+        base = node->mapped;
+    }
+
+    /* Non-coherent memory may hold stale data (e.g. a readback the GPU just
+     * wrote); invalidate the allocation's range before handing it out */
+    if (!__lahar_fl_is_coherent(node->mem_type)) {
+        const VkDeviceSize atom = lahar_->physdev_info.properties.limits.nonCoherentAtomSize;
+        const VkDeviceSize mem_size = node->block ? node->block->size : node->size;
+
+        VkMappedMemoryRange range = ZINIT;
+        range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        range.memory = node->block ? node->block->memory : node->memory;
+        range.offset = __lahar_fl_align_down(node->offset, atom);
+
+        VkDeviceSize end = __lahar_fl_align_up(node->offset + node->size, atom);
+        if (end > mem_size) { end = mem_size; }
+        range.size = end - range.offset;
+
+        if ((lahar_->vkresult = vkInvalidateMappedMemoryRanges(lahar_->device, 1, &range)) != VK_SUCCESS) {
+            return LAHAR_ERR_VK_ERR;
+        }
+    }
+
+    *out = base;
+    return LAHAR_ERR_SUCCESS;
+}
+
+static uint32_t __lahar_fl_unmap(void* self, Lahar* lahar_, LaharAllocation allocation) {
+    if (!self || !lahar_) { return LAHAR_ERR_INVALID_STATE; }
+    if (!allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+    /* Mappings are persistent; nothing to do */
+    return LAHAR_ERR_SUCCESS;
+}
+
+static uint32_t __lahar_fl_flush(void* self, Lahar* lahar_, LaharAllocation allocation, uint64_t off, uint64_t size) {
+    if (!self || !lahar_) { return LAHAR_ERR_INVALID_STATE; }
+    if (!allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+    LaharFlAlloc* node = (LaharFlAlloc*)allocation;
+
+    if (off > node->size) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+    if (size != VK_WHOLE_SIZE && off + size > node->size) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+    /* Coherent memory doesn't need flushing */
+    if (__lahar_fl_is_coherent(node->mem_type)) {
+        return LAHAR_ERR_SUCCESS;
+    }
+
+    const VkDeviceSize atom = lahar_->physdev_info.properties.limits.nonCoherentAtomSize;
+    const VkDeviceSize mem_size = node->block ? node->block->size : node->size;
+
+    const VkDeviceSize start = node->offset + off;
+    const VkDeviceSize end = size == VK_WHOLE_SIZE ? node->offset + node->size : start + size;
+
+    VkMappedMemoryRange range = ZINIT;
+    range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    range.memory = node->block ? node->block->memory : node->memory;
+    range.offset = __lahar_fl_align_down(start, atom);
+
+    VkDeviceSize rend = __lahar_fl_align_up(end, atom);
+    if (rend > mem_size) { rend = mem_size; }
+    range.size = rend - range.offset;
+
+    if ((lahar_->vkresult = vkFlushMappedMemoryRanges(lahar_->device, 1, &range)) != VK_SUCCESS) {
+        return LAHAR_ERR_VK_ERR;
+    }
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+static LaharAllocator __lahar_freelist_adapter = {
+    .alloc_image = __lahar_fl_alloc_img,
+    .free_image = __lahar_fl_free_img,
+    .alloc_buffer = __lahar_fl_alloc_buffer,
+    .free_buffer = __lahar_fl_free_buffer,
+    .map = __lahar_fl_map,
+    .unmap = __lahar_fl_unmap,
+    .flush = __lahar_fl_flush
+};
+
+LaharAllocator* lahar_allocator_freelist(void) {
+    return &__lahar_freelist_adapter;
+}
+
+uint32_t __lahar_init_freelist_alloc(void) {
+    if (!lahar->gpu_allocator) {
+        lahar->gpu_allocator = &__lahar_freelist_adapter;
+    }
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+void lahar_freelist_deinit(void) {
+    uint64_t leaks = 0;
+    uint64_t leaked_bytes = 0;
+
+    for (uint32_t t = 0; t < VK_MAX_MEMORY_TYPES; t++) {
+        LaharFlPool* pool = &__lahar_fl.pools[t];
+
+        while (pool->count) {
+            LaharFlBlock* block = pool->blocks[0];
+
+            for (LaharFlAlloc* node = block->head; node; node = node->next) {
+                if (node->is_free) { continue; }
+
+                lahar_warn(
+                    "Leaked GPU allocation: %llu bytes, memory type %u, offset %llu, name: %s",
+                    (unsigned long long)node->size, t,
+                    (unsigned long long)node->offset,
+                    node->tag ? node->tag : "(unnamed)"
+                );
+
+                leaks++;
+                leaked_bytes += node->size;
+            }
+
+            /* Destroy unconditionally: a leak shouldn't also leak the block */
+            __lahar_fl_block_destroy(block);
+        }
+
+        lahar_free(pool->blocks);
+        memset(pool, 0, sizeof(*pool));
+    }
+
+    LaharFlAlloc* node = __lahar_fl.dedicated_head;
+    while (node) {
+        LaharFlAlloc* next = node->next;
+
+        lahar_warn(
+            "Leaked dedicated GPU allocation: %llu bytes, memory type %u, name: %s",
+            (unsigned long long)node->size, node->mem_type,
+            node->tag ? node->tag : "(unnamed)"
+        );
+
+        leaks++;
+        leaked_bytes += node->size;
+
+        if (node->mapped && vkUnmapMemory) {
+            vkUnmapMemory(lahar->device, node->memory);
+        }
+
+        if (vkFreeMemory) {
+            vkFreeMemory(lahar->device, node->memory, lahar->vkalloc);
+        }
+
+        lahar_free(node);
+        node = next;
+    }
+
+    if (leaks) {
+        lahar_warn(
+            "GPU allocator: %llu leaked allocation(s) totaling %llu bytes",
+            (unsigned long long)leaks, (unsigned long long)leaked_bytes
+        );
+    }
+
+    if (lahar->gpu_allocator == &__lahar_freelist_adapter) {
+        lahar->gpu_allocator = NULL;
+    }
+
+    memset(&__lahar_fl, 0, sizeof(__lahar_fl));
+}
+
+uint32_t lahar_freelist_stats(LaharFreelistStats* out) {
+    if (!out) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+    out->reserved = __lahar_fl.reserved;
+    out->used = __lahar_fl.used;
+    out->live_allocations = __lahar_fl.live_allocs;
+    out->block_count = __lahar_fl.block_count;
+    out->dedicated_count = __lahar_fl.dedicated_count;
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+/* Attach a name to an allocation for leak reports. The string is not
+ * copied; it must outlive the allocation */
+uint32_t lahar_freelist_allocation_name(LaharAllocation alloc, const char* name) {
+    if (!alloc) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+    ((LaharFlAlloc*)alloc)->tag = name;
+
+    return LAHAR_ERR_SUCCESS;
+}
 
 
 
@@ -10038,7 +10954,7 @@ static uint32_t lahar_load_instance(LaharLoaderFunc loadfn) {
 #endif /* (defined(VK_KHR_device_group) && defined(VK_KHR_surface)) || (defined(VK_KHR_swapchain) && defined(VK_VERSION_1_1)) */
 /* LAHAR_VK_LOAD_INSTANCE */
 
-    return LAHAR_ERR_SUCCESS; 
+    return LAHAR_ERR_SUCCESS;
 }
 
 static uint32_t lahar_load_device(LaharLoaderFunc loadfn) {

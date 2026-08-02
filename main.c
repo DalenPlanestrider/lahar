@@ -207,8 +207,8 @@ uint64_t time_ns(void) {
 
 void sleep_ns(uint64_t ns) {
     struct timespec ts = {
-        .tv_sec  = ns / 1000000000ULL,
-        .tv_nsec = ns % 1000000000ULL
+        .tv_sec  = (long)(ns / 1000000000ULL),
+        .tv_nsec = (long)(ns % 1000000000ULL)
     };
     nanosleep(&ts, NULL);
 }

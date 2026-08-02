@@ -8,3 +8,4 @@ lahar
 .clangd
 compile_commands.json
 *.spv
+notes/

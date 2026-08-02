@@ -12,12 +12,13 @@ The library is targeted towards developers with at least some experience with Vu
 * Self contained SPIR-V introspection interface
 * Integration with popular window libraries like GLFW, SDL2/3, or bring your own window implementation
 * Integration with VMA for the bit of allocation it needs to do, or bring your own allocator
+* A dirt simple linear-walk freelist allocator as a fallback
 * Compiles without issue in a C++ environment
+* Safe to set up and tear down repeatedly within a single process, e.g. for applying graphics settings changes mid-play
 
 ## Things Outside Lahar's Scope
-* Vulkan memory management
 * Asset, scene, and lifetime management
-* command buffer recording, textures, render passes 
+* command buffer recording, textures, render passes
 * Simplifying or hiding Vulkan concepts
 
 ## Installation
