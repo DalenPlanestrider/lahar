@@ -1252,10 +1252,13 @@ struct LaharFreelistStats {
     uint64_t dedicated_count;   // Number of live dedicated allocations
 };
 
+/** Get the global freelist allocator. */
 LaharAllocator* lahar_allocator_freelist(void);
-uint32_t __lahar_init_freelist_alloc(void);
+/** Destroy the freelist allocator */
 void lahar_freelist_deinit(void);
+/** Get the current allocation stats from the freelist allocator */
 uint32_t lahar_freelist_stats(LaharFreelistStats* out);
+/** Get an allocation from the freelist allocator's name */
 uint32_t lahar_freelist_allocation_name(LaharAllocation alloc, const char* name);
 
 
@@ -1278,7 +1281,7 @@ uint32_t lahar_freelist_allocation_name(LaharAllocation alloc, const char* name)
 
 extern Lahar __lahar_instance;
 extern Lahar* lahar;
-#define LAHAR_VERSION VK_MAKE_VERSION(3, 0, 0)
+#define LAHAR_VERSION VK_MAKE_VERSION(3, 0, 1)
 
 #if defined(__cplusplus) && defined(LAHAR_C_LINKAGE)
 }
@@ -3081,6 +3084,7 @@ static uint32_t lahar_load_loader(LaharLoaderFunc loadfn);
 static uint32_t lahar_load_instance(LaharLoaderFunc loadfn);
 static uint32_t lahar_load_device(LaharLoaderFunc loadfn);
 
+uint32_t __lahar_init_freelist_alloc(void);
 
 static uint8_t __marena[LAHAR_M_ARENA_SIZE];
 static size_t __mpos = 0;
@@ -6544,7 +6548,7 @@ bool __lahar_spv_v1_var_lookup_is_builtin(const LaharSPVInfo* info, uint32_t var
     for (uint64_t i = info->section_offsets.annotations; i < info->section_offsets.types;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = (uint16_t)word >> 16;
+        const uint16_t word_count = (uint16_t)(word >> 16);
 
         if (opcode == LAHAR_SPV_OP_DECORATE) {
             const uint32_t decorated_target = code[i + 1];
@@ -6572,7 +6576,7 @@ bool __lahar_spv_v1_lookup_is_bufferblock(const LaharSPVInfo* info, uint32_t typ
     for (uint64_t i = info->section_offsets.annotations; i < info->section_offsets.types;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = (uint16_t)word >> 16;
+        const uint16_t word_count = (uint16_t)(word >> 16);
 
         if (opcode == LAHAR_SPV_OP_DECORATE) {
             const uint32_t decorated_target = code[i + 1];
@@ -6602,7 +6606,7 @@ uint32_t __lahar_spv_v1_lookup_input_location(const LaharSPVInfo* info, uint32_t
     for (uint64_t i = info->section_offsets.annotations; i < info->section_offsets.types;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = (uint16_t)word >> 16;
+        const uint16_t word_count = (uint16_t)(word >> 16);
 
         if (opcode == LAHAR_SPV_OP_DECORATE) {
             const uint32_t target = code[i + 1];
@@ -6633,7 +6637,7 @@ uint32_t __lahar_spv_v1_lookup_type_array_stride(const LaharSPVInfo* info, uint3
     for (uint64_t i = info->section_offsets.annotations; i < info->section_offsets.types;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = (uint16_t)word >> 16;
+        const uint16_t word_count = (uint16_t)(word >> 16);
 
         if (opcode == LAHAR_SPV_OP_DECORATE) {
             const uint32_t target = code[i + 1];
@@ -6661,7 +6665,7 @@ const char* __lahar_spv_v1_lookup_id_name(const LaharSPVInfo* info, uint32_t var
     for (uint64_t i = info->section_offsets.debug; i < info->section_offsets.annotations;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = (uint16_t)word >> 16;
+        const uint16_t word_count = (uint16_t)(word >> 16);
 
         if (opcode == LAHAR_SPV_OP_NAME) {
             const uint32_t target = code[i + 1];
@@ -6687,7 +6691,7 @@ uint32_t __lahar_spv_v1_lookup_set_binding(const LaharSPVInfo* info, uint32_t va
     for (uint64_t i = info->section_offsets.annotations; i < info->section_offsets.types;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = (uint16_t)word >> 16;
+        const uint16_t word_count = (uint16_t)(word >> 16);
 
         if (opcode == LAHAR_SPV_OP_DECORATE) {
             const uint32_t decorated_target = code[i + 1];
@@ -6735,7 +6739,7 @@ uint32_t __lahar_spv_v1_lookup_member_offset(const LaharSPVInfo* info, uint32_t 
     for (uint64_t i = info->section_offsets.annotations; i < info->section_offsets.types;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = (uint16_t)word >> 16;
+        const uint16_t word_count = (uint16_t)(word >> 16);
 
         if (opcode == LAHAR_SPV_OP_MEMBER_DECORATE) {
             const uint32_t struct_target = code[i + 1];
@@ -6766,7 +6770,7 @@ uint32_t __lahar_spv_v1_lookup_member_matrix_stride(const LaharSPVInfo* info, ui
     for (uint64_t i = info->section_offsets.annotations; i < info->section_offsets.types;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = (uint16_t)word >> 16;
+        const uint16_t word_count = (uint16_t)(word >> 16);
 
         if (opcode == LAHAR_SPV_OP_MEMBER_DECORATE) {
             const uint32_t struct_target = code[i + 1];
@@ -6801,7 +6805,7 @@ const char* __lahar_spv_v1_lookup_member_name(const LaharSPVInfo* info, uint32_t
     for (uint64_t i = info->section_offsets.debug; i < info->section_offsets.annotations;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = (uint16_t)word >> 16;
+        const uint16_t word_count = (uint16_t)(word >> 16);
 
         if (opcode == LAHAR_SPV_OP_MEMBER_NAME) {
             const uint32_t target_struct = code[i + 1];
@@ -6827,7 +6831,7 @@ uint32_t __lahar_spv_v1_lookup_constant(const LaharSPVInfo* info, uint32_t const
     for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = (uint16_t)word >> 16;
+        const uint16_t word_count = (uint16_t)(word >> 16);
 
         if (
             opcode == LAHAR_SPV_OP_CONSTANT ||
@@ -7106,7 +7110,7 @@ uint32_t __lahar_spv_v1_build_section_offsets(LaharSPVInfo* info) {
     do {
         uint32_t word = code[index];
         uint16_t opcode = word & 0xFFFF;
-        uint16_t word_count = (uint16_t)word >> 16;
+        uint16_t word_count = (uint16_t)(word >> 16);
 
         switch (phase) {
             case 0: { // 0: in the capabilities
@@ -7207,7 +7211,7 @@ uint32_t __lahar_spv_v1_count_types(LaharSPVInfo* info) {
     for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
         uint32_t word = code[i];
         uint16_t opcode = word & 0xFFFF;
-        uint16_t word_count = (uint16_t)word >> 16;
+        uint16_t word_count = (uint16_t)(word >> 16);
 
         if (word_count == 0) { return LAHAR_ERR_MALFORMED_CODE; }
 
@@ -7243,7 +7247,7 @@ uint32_t __lahar_spv_v1_extract_types(LaharSPVInfo* info) {
     for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
         uint32_t word = code[i];
         uint16_t opcode = word & 0xFFFF;
-        uint16_t word_count = (uint16_t)word >> 16;
+        uint16_t word_count = (uint16_t)(word >> 16);
 
         switch (opcode) {
             case LAHAR_SPV_OP_TYPE_VOID: {
@@ -7561,7 +7565,7 @@ uint32_t __lahar_spv_v1_count_unique_descriptor_slots(
     for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = (uint16_t)word >> 16;
+        const uint16_t word_count = (uint16_t)(word >> 16);
 
         // found a var
         if (opcode == LAHAR_SPV_OP_VARIABLE) {
@@ -7645,7 +7649,7 @@ void __lahar_spv_v1_count_input_slots(const LaharSPVInfo* info, uint32_t* count_
     for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = (uint16_t)word >> 16;
+        const uint16_t word_count = (uint16_t)(word >> 16);
 
         if (opcode == LAHAR_SPV_OP_VARIABLE) {
             //const uint32_t var_type = code[i + 1];
@@ -7674,7 +7678,7 @@ uint32_t __lahar_spv_v1_count_push_contant_slots(LaharSPVInfo* info, uint32_t* c
     for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = (uint16_t)word >> 16;
+        const uint16_t word_count = (uint16_t)(word >> 16);
 
         if (opcode == LAHAR_SPV_OP_VARIABLE) {
             const uint32_t var_type = code[i + 1];
@@ -7713,7 +7717,7 @@ uint32_t __lahar_spv_v1_extract_inputs(const LaharSPVInfo* info, LaharShaderVarI
     for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = (uint16_t)word >> 16;
+        const uint16_t word_count = (uint16_t)(word >> 16);
 
         if (opcode == LAHAR_SPV_OP_VARIABLE) {
             const uint32_t var_type = code[i + 1];
@@ -7924,7 +7928,7 @@ uint32_t __lahar_spv_v1_extract_descriptors(LaharSPVInfo* info, LaharShaderVarIn
     for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = (uint16_t)word >> 16;
+        const uint16_t word_count = (uint16_t)(word >> 16);
 
         if (opcode == LAHAR_SPV_OP_VARIABLE) {
             const uint32_t var_type = code[i + 1];
@@ -8047,7 +8051,7 @@ uint32_t __lahar_spv_v1_extract_push_block(LaharSPVInfo* info, LaharShaderVarInf
     for (uint64_t i = info->section_offsets.types; i < info->section_offsets.functions;) {
         const uint32_t word = code[i];
         const uint16_t opcode = word & 0xFFFF;
-        const uint16_t word_count = (uint16_t)word >> 16;
+        const uint16_t word_count = (uint16_t)(word >> 16);
 
         if (opcode == LAHAR_SPV_OP_VARIABLE) {
             const uint32_t var_type = code[i + 1];
