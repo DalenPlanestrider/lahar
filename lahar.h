@@ -28,7 +28,7 @@ The general flow is:
 6. Your normal vulkan flow. Set up pipelines, enter render loop, etc
 
 7. (optional) lahar has some utilities to simplify command submission, window presentation,
-   and layout transitions, if you want.
+   layout transitions, and pipleline creation, if you want.
 
 
 
@@ -54,7 +54,7 @@ Compile-Time Configuration options:
         This controls how many stages a shader can include. Default: 8
 
     LAHAR_MAX_ATTACHMENTS [positive integer]
-        This controls how attachments a window can have. Default: 8
+        This controls how many attachments a window can have. Default: 8
 
     LAHAR_MAX_SHADER_COMPILERS [positive integer]
         The maximum number of shader compilers you can register. Default: 4
@@ -82,6 +82,9 @@ Compile-Time Configuration options:
 
     LAHAR_USE_VMA
         Use VMA as your allocator. May only work in a C++ context.
+
+    LAHAR_DEFAULT_VK_VERSION
+        Used when you don't specify a vulkan version as the fallback. Default: 1.3
 
     LAHAR_IMPLEMENTATION
         Put the lahar implementation in this source file
@@ -117,6 +120,7 @@ Compile-Time Configuration options:
     #include <stddef.h>
 
     #define LAHAR_ALIGNOF(T) _Alignof(T)
+    #define lahar_static_assert(c, m) _Static_assert(c, m)
 #else
     #include <cstdint>
     #include <cstring>
@@ -126,16 +130,12 @@ Compile-Time Configuration options:
     #include <cstddef>
 
     #define LAHAR_ALIGNOF(T) alignof(T)
+    #define lahar_static_assert(c, m) static_assert(c, m)
 #endif
 
 #if defined(VULKAN_H_) && !defined(VK_NO_PROTOTYPES)
     #error "Lahar manages vulkan for you! If you must include vulkan.h before lahar (e.g. via vk_mem_alloc.h), define VK_NO_PROTOTYPES first so it doesn't conflict with lahar's function loading"
 #endif
-
-#ifdef _glfw3_h_
-    #error "Due to how GLFW handles vulkan, you can't include it before lahar. Instead, #define LAHAR_USE_GLFW"
-#endif
-
 
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
@@ -148,8 +148,8 @@ Compile-Time Configuration options:
 #if defined(LAHAR_CUSTOM_WINDOW)
     #define LaharWindow LAHAR_CUSTOM_WINDOW
 #elif defined(LAHAR_USE_GLFW)
-    #ifdef LAHAR_NO_AUTO_INCLUDE
-        #error "GLFW does not support LAHAR_NO_AUTO_INCLUDE due to how its vulkan support works"
+    #if defined(LAHAR_NO_AUTO_INCLUDE) && defined(__cplusplus) && __STDC_VERSION__ >= 202311L
+        #define LAHAR_GLFW_WARN 1
     #endif
 
     #include <GLFW/glfw3.h>
@@ -169,11 +169,8 @@ Compile-Time Configuration options:
 
     #define LaharWindow SDL_Window
 #else
+    #define LAHAR_WINDOW_WARN 1
     #define LaharWindow void
-
-    #if !defined(__cplusplus) && __STDC_VERSION__ >= 202311L
-        #warning "Lahar is not using a windowing interface, no windows will be available"
-    #endif
 #endif
 // TODO: investigate if Raylib integration is possible. They don't have a window struct,
 // so I might have to poke around in their gutty works for that
@@ -222,8 +219,8 @@ Compile-Time Configuration options:
 #define LAHAR_ERR_MISSING_EXTENSION 0x00020004          // Missing an extension we needed
 #define LAHAR_ERR_NO_SUITABLE_DEVICE 0x00020005         // No device that fits our criteria
 #define LAHAR_ERR_DEPENDENCY_FAILED 0x00020006          // A third party lib failed
-#define LAHAR_ERR_ALLOC_FAILED 0x00020007               // We couldn't allocate
-#define LAHAR_ERR_INVALID_STATE 0x00020008              // The internal state was invalid, this is a bug!
+#define LAHAR_ERR_ALLOC_FAILED 0x00020007               // We couldn't allocate dynamically
+#define LAHAR_ERR_INVALID_STATE 0x00020008              // The internal state was invalid, this is a bug in lahar!
 #define LAHAR_ERR_VK_ERR 0x00020009                     // A vulkan operation failed, see lahar.vkresult
 #define LAHAR_ERR_INVALID_WINDOW 0x0002000A             // This isn't a window known to lahar
 #define LAHAR_ERR_NO_COMMAND_BUFFER 0x0002000B          // You tried to present a frame without submitting any command buffers
@@ -236,7 +233,10 @@ Compile-Time Configuration options:
 #define LAHAR_ERR_ID_NOT_FOUND 0x00020012               // Couldn't find data on this ID
 #define LAHAR_ERR_INVALID_TYPE 0x00020013               // This type can't be used this way
 #define LAHAR_ERR_COMPILATION_FAILED 0x00020014         // Compilation of the provided source failed
-#define LAHAR_ERR_OUT_OF_SPACE 0x00020015               // A fixed buffer ran out of space, update your defines
+#define LAHAR_ERR_OUT_OF_SPACE 0x00020015               // A fixed buffer ran out of space, update your defines and recompile
+#define LAHAR_ERR_MEMORY_UNSATISFIABLE 0x00020016       // You requested a type of GPU memory we don't have
+#define LAHAR_ERR_VERSION_UNSATISFIABLE 0x00020017      // The vulkan version could not be satisfied by this loader or device
+#define LAHAR_ERR_NOT_IMPLEMENTED 0x00020018            // The vulkan version could not be satisfied by this loader or device
 
 struct Lahar;
 typedef struct Lahar Lahar;
@@ -270,6 +270,9 @@ typedef struct LaharShaderBuilder LaharShaderBuilder;
 
 struct LaharShaderCompiler;
 typedef struct LaharShaderCompiler LaharShaderCompiler;
+
+struct LaharAllocationCreateInfo;
+typedef struct LaharAllocationCreateInfo LaharAllocationCreateInfo;
 
 #if !defined(__cplusplus)
 enum LaharWindowProfile;
@@ -316,14 +319,59 @@ typedef enum LaharAttachmentRole LaharAttachmentRole;
 
 enum LaharMemoryUsage;
 typedef enum LaharMemoryUsage LaharMemoryUsage;
+
+enum LaharAllocationRole;
+typedef enum LaharAllocationRole LaharAllocationRole;
 #endif
 
 enum LaharMemoryUsage {
-    LAHAR_MU_GPU_ONLY,
-    LAHAR_MU_UPLOAD,
-    LAHAR_MU_UPLOAD_DEVICE,
-    LAHAR_MU_READBACK,
+    LAHAR_MU_DONT_KNOW = 0,
+    LAHAR_MU_DEVICE_ONLY,
+    LAHAR_MU_STAGING_SEQUENTIAL,
+    LAHAR_MU_UPLOAD_DIRECT,
+    LAHAR_MU_READBACK
 };
+
+enum LaharAllocationRole {
+    LAHAR_AR_DONT_KNOW = 0,
+    LAHAR_AR_VERTEX_BUFFER,
+    LAHAR_AR_INDEX_BUFFER,
+    LAHAR_AR_UNIFORM_BUFFER,
+    LAHAR_AR_STORAGE_BUFFER,
+    LAHAR_AR_INDIRECT_BUFFER,
+    LAHAR_AR_STAGING_BUFFER,
+    LAHAR_AR_QUERY_RESULT_BUFFER,
+    LAHAR_AR_SHADER_BINDING_TABLE,
+    LAHAR_AR_ACCELERATION_STRUCTURE,
+    LAHAR_AR_DEVICE_ADDRESS,
+    LAHAR_AR_TRANSFORM_FEEDBACK,
+    LAHAR_AR_SAMPLED_IMAGE,
+    LAHAR_AR_STORAGE_IMAGE,
+    LAHAR_AR_TRANSFER_IMAGE,
+    LAHAR_AR_COLOR_ATTACHMENT,
+    LAHAR_AR_DEPTH_STENCIL_ATTACHMENT,
+    LAHAR_AR_INPUT_ATTACHMENT,
+    LAHAR_AR_TRANSIENT_ATTACHMENT,
+    LAHAR_AR_OTHER_1,
+    LAHAR_AR_OTHER_2,
+    LAHAR_AR_OTHER_3,
+    LAHAR_AR_OTHER_4,
+    LAHAR_AR_OTHER_5,
+};
+
+struct LaharAllocationCreateInfo {
+    LaharMemoryUsage usage;     // Determines the memory flags to use
+    LaharAllocationRole role;   // Finer grained usage, optional
+    VkFlags required_flags;     // flags the allocation memory type must have
+    VkFlags preferred_flags;    // flags the allocation memory type would prefer to have
+    void* pNext;                // extension data
+};
+
+/* Behaviors of the default allocator:
+ * It totally ignores role
+ * If usage is 0/DONT_KNOW, and no flags are supplied, usage defaults to DEVICE_ONLY
+ * If usage is 0/DONT_KNOW, and required flags are supplied, only the flags are used
+ */
 
 typedef PFN_vkVoidFunction (*LaharLoaderFunc)(const char*);
 typedef int64_t (*LaharDeviceScoreFunc)(const LaharDeviceInfo*);
@@ -333,13 +381,14 @@ typedef uint32_t (*LaharSurfaceResizeFunc)(LaharWindow* window);
 typedef uint32_t (*LaharShaderCompileFunc)(void* data, const LaharShaderStage* stage, uint32_t** spv_out, uint64_t* len_out);
 typedef uint32_t (*LaharShaderCompileReleaseFunc)(void* data, uint32_t* spv, uint64_t len);
 
-typedef uint32_t (*LaharAllocImageFunc)(void* self, Lahar* lahar, const VkImageCreateInfo* info, VkImage* img_out, LaharAllocation* alloc_out);
-typedef uint32_t (*LaharFreeImageFunc)(void* self, Lahar* lahar, VkImage* img, LaharAllocation* alloc);
-typedef uint32_t (*LaharAllocBufferFunc)(void* self, Lahar*, const VkBufferCreateInfo*, LaharMemoryUsage usage, VkBuffer*, LaharAllocation*);
-typedef uint32_t (*LaharFreeBufferFunc)(void* self, Lahar*, VkBuffer*, LaharAllocation*);
-typedef uint32_t (*LaharMapFunc)(void* self, Lahar*, LaharAllocation, void** out);
-typedef uint32_t (*LaharUnmapFunc)(void* self, Lahar*, LaharAllocation);
-typedef uint32_t (*LaharFlushFunc)(void* self, Lahar*, LaharAllocation, uint64_t off, uint64_t size);
+typedef uint32_t (*LaharAllocImageFunc)(void* self, const VkImageCreateInfo* info, const LaharAllocationCreateInfo* alloc_info,  VkImage* img_out, LaharAllocation* alloc_out);
+typedef uint32_t (*LaharFreeImageFunc)(void* self, VkImage img, LaharAllocation alloc);
+typedef uint32_t (*LaharAllocBufferFunc)(void* self, const VkBufferCreateInfo* info, const LaharAllocationCreateInfo* alloc_info, VkBuffer*, LaharAllocation*);
+typedef uint32_t (*LaharFreeBufferFunc)(void* self, VkBuffer, LaharAllocation);
+typedef uint32_t (*LaharMapFunc)(void* self, LaharAllocation, void** out);
+typedef uint32_t (*LaharUnmapFunc)(void* self, LaharAllocation);
+typedef uint32_t (*LaharFlushFunc)(void* self, LaharAllocation, uint64_t off, uint64_t size);
+typedef uint32_t (*LaharInvalidateFunc)(void* self, LaharAllocation, uint64_t off, uint64_t size);
 
 struct LaharAllocator {
     LaharAllocImageFunc alloc_image;
@@ -349,6 +398,7 @@ struct LaharAllocator {
     LaharMapFunc map;
     LaharUnmapFunc unmap;
     LaharFlushFunc flush;
+    LaharInvalidateFunc invalidate;
 };
 
 struct LaharDeviceInfo {
@@ -356,6 +406,7 @@ struct LaharDeviceInfo {
     VkPhysicalDeviceProperties properties;
     VkPhysicalDeviceFeatures features;
     VkPhysicalDeviceMemoryProperties memprops;
+    VkPhysicalDeviceLimits limits;
 
     VkSurfaceFormatKHR surface_formats[LAHAR_MAX_DEVICE_ENTRIES];
     VkPresentModeKHR present_modes[LAHAR_MAX_DEVICE_ENTRIES];
@@ -465,7 +516,8 @@ struct Lahar {
     LaharDebugLevel debug_level;
     LaharLibrary libvulkan;                                 // This is the platform's library handle
     VkResult vkresult;                                      // If any vulkan operation fails, the error code is saved here
-    uint32_t vkversion;                                     // Pre-init, this is the requested version. Post-init, it's the selected version
+    uint32_t vkversion;                                     // Pre-init, this is the requested instance version. Post-init, it's the effective min(instance, device, requested) version
+    bool require_min_version;                               // If true, the version is hard required to be at least the requested version, and will fail otherwise
     uint32_t appversion;                                    // An optional setting for the app's version
     const char* appname;                                    // An optional setting for the app's name
     bool wantvalidation;                                    // True if validation layers were requested
@@ -474,6 +526,7 @@ struct Lahar {
     PFN_vkDebugUtilsMessengerCallbackEXT debug_callback;    // One can set the debug messenger callback, if one desires
     void* user_data;                                        // A user supplied pointer
     LaharAllocator* gpu_allocator;                          // A user supplied (or VMA backed, if enabled) Vulkan allocator
+    bool gpu_allocator_defaulted;                           // True if we created the default allocator, and we need to clean it up
     void* device_create_pnext;                              // The pNext to pass to VkDeviceCreateInfo - used for enabling optional features
 
     char* device_name;                                      // An optional lock to the specific device name
@@ -513,7 +566,6 @@ struct Lahar {
 
     #if defined(LAHAR_USE_VMA)
     VmaAllocator vma;
-    bool vma_created;
     #endif
 };
 
@@ -572,31 +624,27 @@ uint32_t lahar_vma_set_allocator(VmaAllocator allocator);
 void lahar_builder_set_debug_level(LaharDebugLevel level);
 
 /** Set the version of vulkan you'd like to load */
-void lahar_builder_set_vulkan_version(uint32_t version);
+void lahar_builder_set_vulkan_version(uint32_t version, bool required);
 
 /** Inform lahar to load the validation layers, if available */
 void lahar_builder_request_validation_layers(void);
 
 /** Add an extension to the list of required instance extensions
- * @param lahar The lahar instance
  * @param extensions The extension to add
  */
 uint32_t lahar_builder_extension_add_required_instance(const char* extension);
 
 /** Add an extension to the list of required device extensions
- * @param lahar The lahar instance
  * @param extensions The extension to add
  */
 uint32_t lahar_builder_extension_add_required_device(const char* extension);
 
 /** Add an extension to the list of optional instance extensions
- * @param lahar The lahar instance
  * @param extensions The extension to add
  */
 uint32_t lahar_builder_extension_add_optional_instance(const char* extension);
 
 /** Add an extension to the list of optional device extensions
- * @param lahar The lahar instance
  * @param extensions The extension to add
  */
 uint32_t lahar_builder_extension_add_optional_device(const char* extension);
@@ -607,7 +655,6 @@ void lahar_builder_set_debug_callback(PFN_vkDebugUtilsMessengerCallbackEXT callb
 /** Set a specific device to use. Failure to find the device will
  * always cause finalize to return LAHAR_ERR_NO_SUITABLE_DEVICE
  *
- * @param lahar The lahar instance
  * @param name The device name
  */
 uint32_t lahar_builder_device_use(const char* name);
@@ -617,7 +664,6 @@ uint32_t lahar_builder_device_use(const char* name);
  * device with the highest score is chosen. If not set, the default
  * scoring function is used.
  *
- * @param lahar The lahar instance
  * @param scorefunc The scoring callback
  */
 uint32_t lahar_builder_device_set_scoring(LaharDeviceScoreFunc scorefunc);
@@ -635,7 +681,6 @@ void lahar_builder_set_device_create_pnext(void* pnext);
  * NOTE: UNLESS you've defined LAHAR_NO_AUTO_DEPS, lahar will take ownership of the window,
  * and destroy it when lahar is deinited.
  *
- * @param Lahar The lahar instance
  * @param window The window to register
  * @param winprofile The quick profile to use. For more control, see lahar_window_register_ex
 */
@@ -653,10 +698,8 @@ uint32_t lahar_builder_window_register(LaharWindow* window, LaharWindowProfile w
  * NOTE: UNLESS you've defined LAHAR_NO_AUTO_DEPS, lahar will take ownership of the window,
  * and destroy it when lahar is deinited.
  *
- * @param lahar The lahar instance
  * @param window The window
  * @param winconfig The config
- *
  */
 uint32_t lahar_builder_window_register_ex(LaharWindow* window, const LaharWindowConfig* winconfig);
 
@@ -670,13 +713,11 @@ uint32_t lahar_builder_window_register_ex(LaharWindow* window, const LaharWindow
 
 
 /** Check if an optional instance extension was loaded
- * @param lahar The lahar instance
  * @param extension The extension to check for
  */
 bool lahar_extension_has_instance(const char* extension);
 
 /** Check if an optional device extension was loaded
- * @param lahar The lahar instance
  * @param extension The extension to check for
  */
 bool lahar_extension_has_device(const char* extension);
@@ -706,7 +747,6 @@ uint32_t lahar_window_present(LaharWindow* window);
 
 /** Resize a window's swapchain when the window changes size
  *
- * @param lahar The lahar instance
  * @param window The window to resize
  */
 uint32_t lahar_window_swapchain_resize(LaharWindow* window);
@@ -719,7 +759,6 @@ uint32_t lahar_window_swapchain_resize(LaharWindow* window);
  *
  * Create the vulkan surface.
  *
- * @param lahar The lahar instance
  * @param window The window
  * @param surface (out) The created surface
  *
@@ -736,7 +775,6 @@ uint32_t lahar_window_surface_create(LaharWindow* window, VkSurfaceKHR* surface)
  * Retrieve the window's size. You likely want this to return the framebuffer size
  * specifically.
  *
- * @param lahar The lahar instance
  * @param window The window
  * @param width (out) The window's width
  * @param height (out) The window's height
@@ -753,7 +791,6 @@ uint32_t lahar_window_get_size(LaharWindow* window, uint32_t* width, uint32_t* h
  *
  * Retrieve the extensions the window needs in order to function
  *
- * @param lahar The lahar instance
  * @param window The window
  * @param ext_count (out) The number of extensions the window needs
  * @param extensions (out) The array to write to. This MUST support NULL
@@ -852,7 +889,6 @@ VkCommandBuffer lahar_window_command_buffer(LaharWindow* window);
  * attachment. Useful if you're doing dynamic rendering.
  *
  * @param cmd The command buffer to record to
- * @param lahar The lahar instance
  * @param window The window
  * @param attachment_index The index of the attachment to transition, as specified in your original attachment array (or see defaults)
  * @param layout The layout to transition to
@@ -881,8 +917,7 @@ uint32_t lahar_cmd_begin_rendering(VkCommandBuffer cmd, LaharWindow* window);
  * language is set should also be used on the shader stages
  * to trigger this compiler.
  *
- * @param lahar The lahar instance
- * @param langauge The name of the language to use
+ * @param language The name of the language to use
  * @param compiler_func The function to call to compile the shader
  * @param release_func The function to call to release resources generated by the compiler
  */
@@ -1079,7 +1114,7 @@ enum LaharShaderVarType {
 };
 
 struct LaharShaderVarInfo {
-    const char* path;                           // A path to the variable, such as mesh.transform
+    const char* path;                           // A path to the variable, such as mesh.transform, invalidated on next call into lahar
     LaharShaderVarStorageClass storage_class;   // The spir-v storage class
 
     uint32_t offset;                            // The offset in bytes inside the parent type
@@ -1215,9 +1250,10 @@ const char* lahar_vkformat_string(VkFormat format);
 uint32_t lahar_shader_var_type_to_input_type(LaharShaderVarType svt, VkFormat* format_out);
 
 /** Given a set of stages, introspect all the inputs, descriptors, and push constants.
- * The output of this function is only guaranteed to live until the next call into lahar
+ * The path field of the shader vars are only guaranteed to live until the next call into lahar
  *
- * @param stages A list of stages, terminated by an empty stage
+ * @param stages A list of stages
+ * @param num_stages The number of stages you're passing in
  * @param num_infos (out) The number of info structs that will be/has been written
  * @param info (out) (nullable) The array to write the info structs into
  */
@@ -1241,25 +1277,6 @@ void lahar_shader_introspection_print(const LaharShaderVarInfo* infos, uint32_t 
 
 
 
-struct LaharFreelistStats;
-typedef struct LaharFreelistStats LaharFreelistStats;
-
-struct LaharFreelistStats {
-    uint64_t reserved;          // Total VkDeviceMemory held (blocks + dedicated)
-    uint64_t used;              // Sum of live allocation sizes
-    uint64_t live_allocations;  // Number of outstanding allocations
-    uint64_t block_count;       // Number of live memory blocks
-    uint64_t dedicated_count;   // Number of live dedicated allocations
-};
-
-/** Get the global freelist allocator. */
-LaharAllocator* lahar_allocator_freelist(void);
-/** Destroy the freelist allocator */
-void lahar_freelist_deinit(void);
-/** Get the current allocation stats from the freelist allocator */
-uint32_t lahar_freelist_stats(LaharFreelistStats* out);
-/** Get an allocation from the freelist allocator's name */
-uint32_t lahar_freelist_allocation_name(LaharAllocation alloc, const char* name);
 
 
 
@@ -1267,12 +1284,11 @@ uint32_t lahar_freelist_allocation_name(LaharAllocation alloc, const char* name)
 
 
 
+/** Create a freelist vulkan allocator */
+LaharAllocator* lahar_allocator_freelist_init(void);
 
-
-
-
-
-
+/** Destroy a freelist vulkan allocator */
+void lahar_allocator_freelist_deinit(LaharAllocator* allocator);
 
 
 
@@ -1281,7 +1297,7 @@ uint32_t lahar_freelist_allocation_name(LaharAllocation alloc, const char* name)
 
 extern Lahar __lahar_instance;
 extern Lahar* lahar;
-#define LAHAR_VERSION VK_MAKE_VERSION(3, 0, 1)
+#define LAHAR_VERSION VK_MAKE_VERSION(4, 0, 0)
 
 #if defined(__cplusplus) && defined(LAHAR_C_LINKAGE)
 }
@@ -2515,7 +2531,8 @@ extern PFN_vkAcquireNextImage2KHR vkAcquireNextImage2KHR;
 
 #endif //LAHAR_H
 
-#ifdef LAHAR_IMPLEMENTATION
+#if defined(LAHAR_IMPLEMENTATION) && !defined(LAHAR_IMPLEMENTATION_INCLUDED)
+#define LAHAR_IMPLEMENTATION_INCLUDED
 
 
 
@@ -2546,6 +2563,10 @@ extern PFN_vkAcquireNextImage2KHR vkAcquireNextImage2KHR;
     #define LAHAR_M_CHECK_CT 16
 #endif
 
+#ifndef LAHAR_DEFAULT_VK_VERSION
+    #define LAHAR_DEFAULT_VK_VERSION VK_API_VERSION_1_3
+#endif
+
 #ifndef LAHAR_DEFAULT_ALIGNMENT
     #ifdef __cplusplus
         #define LAHAR_DEFAULT_ALIGNMENT LAHAR_ALIGNOF(max_align_t)
@@ -2554,28 +2575,83 @@ extern PFN_vkAcquireNextImage2KHR vkAcquireNextImage2KHR;
     #endif
 #endif
 
+/* layer 1: emission */
+#if defined(_MSC_VER) && !defined(__clang__)
+  #define LAHAR_PRAGMA(x)  __pragma(x)
+#else
+  #define LAHAR_PRAGMA_(x) _Pragma(#x)
+  #define LAHAR_PRAGMA(x)  LAHAR_PRAGMA_(x)
+#endif
+
+#define LAHAR_STR_(x) #x
+#define LAHAR_STR(x)  LAHAR_STR_(x)
+
+/* layer 2: diagnostic spelling */
+#if defined(__GNUC__) || defined(__clang__)
+  #define LAHAR_MESSAGE(msg) LAHAR_PRAGMA(message(msg))
+  #define LAHAR_WARNING(msg) LAHAR_PRAGMA(GCC warning msg)
+#elif defined(_MSC_VER)
+  #define LAHAR_MESSAGE(msg) \
+    LAHAR_PRAGMA(message(__FILE__ "(" LAHAR_STR(__LINE__) "): note: " msg))
+  #define LAHAR_WARNING(msg) \
+    LAHAR_PRAGMA(message(__FILE__ "(" LAHAR_STR(__LINE__) "): warning: " msg))
+#else
+  #define LAHAR_MESSAGE(msg)
+  #define LAHAR_WARNING(msg)
+#endif
+
+#if defined(LAHAR_WINDOW_WARN) && !defined(LAHAR_WINDOW_WARN_OK)
+    #pragma message("Lahar is not using a windowing interface, no windows will be available. Define LAHAR_WINDOW_WARN_OK to silence this message.")
+#endif
+
+#if defined(LAHAR_GLFW_WARN) && !defined(LAHAR_WINDOW_GLFW_WARN_OK)
+    #pragma message("With GLFW and NO_AUTO_INCLUDE, ensure you include vulkan with VK_NO_PROTOTYPES before both lahar and GLFW. Define LAHAR_WINDOW_GLFW_WARN_OK to silence this message.")
+#endif
+
 #include <stdarg.h>
 #include <inttypes.h>
 
-
 #ifdef __linux__
-#include <signal.h>
+    #include <signal.h>
 
-#ifndef LAHAR_DEBUG_BREAK
-    #define LAHAR_DEBUG_BREAK raise(SIGTRAP)
-#endif
+    #ifndef LAHAR_DEBUG_BREAK
+        #define LAHAR_DEBUG_BREAK raise(SIGTRAP)
+    #endif
 
-#define LAHAR_ASSERT(cond) do { \
-    if (!(cond)) { \
-        fprintf(stderr, "LAHAR_ASSERT failed: %s at %s:%d\n", #cond, __FILE__, __LINE__); \
-        LAHAR_DEBUG_BREAK; \
-        exit(1); \
-    } \
-} while(0)
 #else
 
-#define LAHAR_ASSERT(cond) assert(cond)
+    #ifndef LAHAR_DEBUG_BREAK
+        #define LAHAR_DEBUG_BREAK
+    #endif
+#endif
 
+
+/* Hard runtime guards. Always on, even in release builds: these protect
+ * against conditions that depend on runtime data (e.g. arena exhaustion)
+ * where proceeding means memory corruption. Define LAHAR_FATAL_ASSERT before
+ * including to supply your own handler; it must not return on failure. */
+#ifndef LAHAR_FATAL_ASSERT
+    #define LAHAR_FATAL_ASSERT(cond) do { \
+        if (!(cond)) { \
+            fprintf(stderr, "LAHAR_FATAL_ASSERT failed: %s at %s:%d\n", #cond, __FILE__, __LINE__); \
+            LAHAR_DEBUG_BREAK; \
+            exit(1); \
+        } \
+    } while(0)
+#endif
+
+/* Internal invariant checks. Enabled by LAHAR_DEBUG; compiled out otherwise.
+ * Assertion expressions must be side-effect free. Define LAHAR_ASSERT before
+ * including to supply your own handler. */
+#ifndef LAHAR_ASSERT
+    #ifdef LAHAR_DEBUG
+        #define LAHAR_ASSERT(cond) LAHAR_FATAL_ASSERT(cond)
+    #else
+        /* sizeof leaves the condition unevaluated (no side effects, no
+         * codegen) but still marks referenced variables as used, so
+         * assert-only variables don't trip -Wunused-* in release builds. */
+        #define LAHAR_ASSERT(cond) do { (void)sizeof((cond)); } while(0)
+    #endif
 #endif
 
 #ifdef __cplusplus
@@ -2693,7 +2769,6 @@ void __lahar_error(const char* msg, ...) {
     #define lahar_warn(...)
     #define lahar_error(...)
 #endif
-
 
 #if defined(_WIN32)
     /** Open the handle to the vulkan lib */
@@ -2880,48 +2955,64 @@ static VkBaseInStructure* __lahar_pnext_fetch(void* chain, VkStructureType type)
 
 
 #if defined(LAHAR_USE_VMA)
-    static uint32_t __lahar_vma_alloc_img(void* self, Lahar* lahar, const VkImageCreateInfo* info, VkImage* image, VmaAllocation* allocation) {
-        if (!self || !lahar) { return LAHAR_ERR_INVALID_STATE; }
+    static uint32_t __lahar_vma_alloc_img(
+            void* self,
+            const VkImageCreateInfo* info,
+            const LaharAllocationCreateInfo* alloc_info,
+            VkImage* image,
+            VmaAllocation* allocation
+    ) {
+        if (!self) { return LAHAR_ERR_INVALID_STATE; }
         if (!lahar->vma) { return LAHAR_ERR_INVALID_CONFIGURATION; }
-        if (!info || !image || !allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+        if (!info || !alloc_info || !image || !allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
 
         VmaAllocationCreateInfo alloc_create = ZINIT;
-        VmaAllocationInfo alloc_info = ZINIT;
+        VmaAllocationInfo vma_alloc_info = ZINIT;
 
-        if ((lahar->vkresult = vmaCreateImage(lahar->vma, info, &alloc_create, image, allocation, &alloc_info)) != VK_SUCCESS) {
+        if ((lahar->vkresult = vmaCreateImage(lahar->vma, info, &alloc_create, image, allocation, &vma_alloc_info)) != VK_SUCCESS) {
             return LAHAR_ERR_DEPENDENCY_FAILED;
         }
 
         return LAHAR_ERR_SUCCESS;
     }
 
-    static uint32_t __lahar_vma_free_img(void* self, Lahar* lahar, VkImage* image, VmaAllocation* allocation) {
-        if (!self || !lahar) { return LAHAR_ERR_INVALID_STATE; }
+    static uint32_t __lahar_vma_free_img(
+        void* self,
+        VkImage image,
+        VmaAllocation allocation
+    ) {
+        if (!self) { return LAHAR_ERR_INVALID_STATE; }
         if (!lahar->vma) { return LAHAR_ERR_INVALID_CONFIGURATION; }
         if (!image || !allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
 
-        vmaDestroyImage(lahar->vma, *image, *allocation);
+        vmaDestroyImage(lahar->vma, image, allocation);
 
         return LAHAR_ERR_SUCCESS;
     }
 
-    static uint32_t __lahar_vma_alloc_buffer(void* self, Lahar* lahar, const VkBufferCreateInfo* info, LaharMemoryUsage usage, VkBuffer* buffer, VmaAllocation* allocation) {
-        if (!self || !lahar) { return LAHAR_ERR_INVALID_STATE; }
+    static uint32_t __lahar_vma_alloc_buffer(
+        void* self,
+        const VkBufferCreateInfo* info,
+        const LaharAllocationCreateInfo* alloc_info,
+        VkBuffer* buffer,
+        VmaAllocation* allocation
+    ) {
+        if (!self) { return LAHAR_ERR_INVALID_STATE; }
         if (!lahar->vma) { return LAHAR_ERR_INVALID_CONFIGURATION; }
-        if (!info || !buffer || !allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+        if (!info || !alloc_info || !buffer || !allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
 
         VmaAllocationCreateInfo alloc_create = ZINIT;
-        VmaAllocationInfo alloc_info = ZINIT;
+        VmaAllocationInfo vma_alloc_info = ZINIT;
 
-        switch (usage) {
-            case LAHAR_MU_GPU_ONLY:
+        switch (alloc_info->usage) {
+            case LAHAR_MU_DEVICE_ONLY:
                 alloc_create.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
                 break;
-            case LAHAR_MU_UPLOAD:
+            case LAHAR_MU_STAGING_SEQUENTIAL:
                 alloc_create.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
                 alloc_create.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
                 break;
-            case LAHAR_MU_UPLOAD_DEVICE:
+            case LAHAR_MU_UPLOAD_DIRECT:
                 alloc_create.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
                 alloc_create.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
                 break;
@@ -2933,25 +3024,25 @@ static VkBaseInStructure* __lahar_pnext_fetch(void* chain, VkStructureType type)
                 return LAHAR_ERR_ILLEGAL_PARAMS;
         }
 
-        if ((lahar->vkresult = vmaCreateBuffer(lahar->vma, info, &alloc_create, buffer, allocation, &alloc_info)) != VK_SUCCESS) {
+        if ((lahar->vkresult = vmaCreateBuffer(lahar->vma, info, &alloc_create, buffer, allocation, &vma_alloc_info)) != VK_SUCCESS) {
             return LAHAR_ERR_DEPENDENCY_FAILED;
         }
 
         return LAHAR_ERR_SUCCESS;
     }
 
-    static uint32_t __lahar_vma_free_buffer(void* self, Lahar* lahar, VkBuffer* buffer, VmaAllocation* allocation) {
-        if (!self || !lahar) { return LAHAR_ERR_INVALID_STATE; }
+    static uint32_t __lahar_vma_free_buffer(void* self, VkBuffer buffer, VmaAllocation allocation) {
+        if (!self) { return LAHAR_ERR_INVALID_STATE; }
         if (!lahar->vma) { return LAHAR_ERR_INVALID_CONFIGURATION; }
         if (!buffer || !allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
 
-        vmaDestroyBuffer(lahar->vma, *buffer, *allocation);
+        vmaDestroyBuffer(lahar->vma, buffer, allocation);
 
         return LAHAR_ERR_SUCCESS;
     }
 
-    static uint32_t __lahar_vma_map(void* self, Lahar* lahar, VmaAllocation allocation, void** out) {
-        if (!self || !lahar) { return LAHAR_ERR_INVALID_STATE; }
+    static uint32_t __lahar_vma_map(void* self, VmaAllocation allocation, void** out) {
+        if (!self) { return LAHAR_ERR_INVALID_STATE; }
         if (!lahar->vma) { return LAHAR_ERR_INVALID_CONFIGURATION; }
         if (!allocation || !out) { return LAHAR_ERR_ILLEGAL_PARAMS; }
 
@@ -2962,8 +3053,8 @@ static VkBaseInStructure* __lahar_pnext_fetch(void* chain, VkStructureType type)
         return LAHAR_ERR_SUCCESS;
     }
 
-    static uint32_t __lahar_vma_unmap(void* self, Lahar* lahar, VmaAllocation allocation) {
-        if (!self || !lahar) { return LAHAR_ERR_INVALID_STATE; }
+    static uint32_t __lahar_vma_unmap(void* self, VmaAllocation allocation) {
+        if (!self) { return LAHAR_ERR_INVALID_STATE; }
         if (!lahar->vma) { return LAHAR_ERR_INVALID_CONFIGURATION; }
         if (!allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
 
@@ -2972,12 +3063,24 @@ static VkBaseInStructure* __lahar_pnext_fetch(void* chain, VkStructureType type)
         return LAHAR_ERR_SUCCESS;
     }
 
-    static uint32_t __lahar_vma_flush(void* self, Lahar* lahar, VmaAllocation allocation, uint64_t off, uint64_t size) {
-        if (!self || !lahar) { return LAHAR_ERR_INVALID_STATE; }
+    static uint32_t __lahar_vma_flush(void* self, VmaAllocation allocation, uint64_t off, uint64_t size) {
+        if (!self) { return LAHAR_ERR_INVALID_STATE; }
         if (!lahar->vma) { return LAHAR_ERR_INVALID_CONFIGURATION; }
         if (!allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
 
         if ((lahar->vkresult = vmaFlushAllocation(lahar->vma, allocation, off, size)) != VK_SUCCESS) {
+            return LAHAR_ERR_DEPENDENCY_FAILED;
+        }
+
+        return LAHAR_ERR_SUCCESS;
+    }
+
+    static uint32_t __lahar_vma_invalidate(void* self, VmaAllocation allocation, uint64_t off, uint64_t size) {
+        if (!self) { return LAHAR_ERR_INVALID_STATE; }
+        if (!lahar->vma) { return LAHAR_ERR_INVALID_CONFIGURATION; }
+        if (!allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+        if ((lahar->vkresult = vmaInvalidateAllocation(lahar->vma, allocation, off, size)) != VK_SUCCESS) {
             return LAHAR_ERR_DEPENDENCY_FAILED;
         }
 
@@ -2991,13 +3094,15 @@ static VkBaseInStructure* __lahar_pnext_fetch(void* chain, VkStructureType type)
         .free_buffer = __lahar_vma_free_buffer,
         .map = __lahar_vma_map,
         .unmap = __lahar_vma_unmap,
-        .flush = __lahar_vma_flush
+        .flush = __lahar_vma_flush,
+        .invalidate = __lahar_vma_invalidate
     };
 
     uint32_t lahar_vma_set_allocator(VmaAllocator allocator) {
         if (!allocator) { return LAHAR_ERR_ILLEGAL_PARAMS; }
 
         lahar->vma = allocator;
+        lahar->gpu_allocator_defaulted = false;
         return LAHAR_ERR_SUCCESS;
     }
 
@@ -3065,14 +3170,14 @@ static VkBaseInStructure* __lahar_pnext_fetch(void* chain, VkStructureType type)
                 return LAHAR_ERR_DEPENDENCY_FAILED;
             }
 
-            lahar->vma_created = true;
+            lahar->gpu_allocator_defaulted = true;
         }
 
         return LAHAR_ERR_SUCCESS;
     }
 
     static void __lahar_deinit_vma() {
-        if (lahar->vma_created) {
+        if (lahar->gpu_allocator_defaulted) {
             vmaDestroyAllocator(lahar->vma);
         }
     }
@@ -3084,15 +3189,13 @@ static uint32_t lahar_load_loader(LaharLoaderFunc loadfn);
 static uint32_t lahar_load_instance(LaharLoaderFunc loadfn);
 static uint32_t lahar_load_device(LaharLoaderFunc loadfn);
 
-uint32_t __lahar_init_freelist_alloc(void);
-
 static uint8_t __marena[LAHAR_M_ARENA_SIZE];
 static size_t __mpos = 0;
 static size_t __mcheck[LAHAR_M_CHECK_CT];
 static size_t __mchkct = 0;
 
 void lahar_temp_mcheck() {
-    LAHAR_ASSERT(__mchkct < sizeof(__mcheck) / sizeof(__mcheck[0])); // if this trips, Lahar is broken
+    LAHAR_FATAL_ASSERT(__mchkct < sizeof(__mcheck) / sizeof(__mcheck[0])); // if this trips, Lahar is broken
     __mcheck[__mchkct++] = __mpos;
 }
 
@@ -3110,7 +3213,9 @@ void* lahar_temp_alloc_aligned(size_t bytes, size_t alignment) {
 
     size_t real_amt = padding + bytes;
 
-    LAHAR_ASSERT(sizeof(__marena) - __mpos >= real_amt);
+    // Overflow-safe form of __mpos + real_amt <= size; proceeding past this
+    // would hand out memory beyond the arena and corrupt whatever follows it.
+    LAHAR_FATAL_ASSERT(sizeof(__marena) - __mpos >= real_amt);
 
     void* ret = &__marena[__mpos + padding];
     __mpos += real_amt;
@@ -3159,6 +3264,10 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL __lahar_default_dbgcallback(
 
 static int64_t __lahar_default_scorer(const LaharDeviceInfo* devinfo) {
     if (!devinfo->has_graphics_queue || !devinfo->has_present_queue) { return -1; }
+
+    if (lahar->require_min_version && devinfo->properties.apiVersion < lahar->vkversion) {
+        return -1;
+    }
 
     int64_t score = 0;
 
@@ -3282,7 +3391,7 @@ static uint32_t __lahar_default_resizer(LaharWindow* window) {
             }
 
             if (attachment->image != VK_NULL_HANDLE) {
-                lahar->gpu_allocator->free_image(lahar->gpu_allocator, lahar, &attachment->image, &attachment->img_allocation);
+                lahar->gpu_allocator->free_image(lahar->gpu_allocator, attachment->image, attachment->img_allocation);
             }
         }
     }
@@ -3354,8 +3463,9 @@ static uint32_t __lahar_default_resizer(LaharWindow* window) {
 
     vkGetSwapchainImagesKHR(lahar->device, winstate->swapchain, &winstate->swap_size, NULL);
 
-    // TODO: handle potential swapchain image count changes
-    LAHAR_ASSERT(old_swap_size == winstate->swap_size);
+    // TODO: handle potential swapchain image count changes. Runtime data,
+    // not an invariant: the spec allows the count to change on recreate.
+    LAHAR_FATAL_ASSERT(old_swap_size == winstate->swap_size);
 
     swap_imgs = (VkImage*)lahar_temp_alloc(winstate->swap_size * sizeof(VkImage));
     swap_views = (VkImageView*)lahar_temp_alloc(winstate->swap_size * sizeof(VkImageView));
@@ -3417,10 +3527,28 @@ static uint32_t __lahar_default_resizer(LaharWindow* window) {
         for (size_t k = 0; k < winstate->swap_size; k++) {
             LaharAttachment* attachment = &attachment_list[k];
 
+            LaharAllocationCreateInfo alloc_create_info = {
+                .usage = LAHAR_MU_DEVICE_ONLY,
+            };
+
+            switch (attachment_config->role) {
+                case LAHAR_ATTROLE_COLOR:
+                case LAHAR_ATTROLE_USER:
+                    alloc_create_info.role = LAHAR_AR_COLOR_ATTACHMENT;
+                    break;
+                case LAHAR_ATTROLE_DEPTH:
+                case LAHAR_ATTROLE_STENCIL:
+                case LAHAR_ATTROLE_DEPTH_STENCIL:
+                    alloc_create_info.role = LAHAR_AR_DEPTH_STENCIL_ATTACHMENT;
+                    break;
+                default:
+                    break;
+            }
+
             if ((err = lahar->gpu_allocator->alloc_image(
                 lahar->gpu_allocator,
-                lahar,
                 &attachment_config->img_info,
+                &alloc_create_info,
                 &attachment->image,
                 &attachment->img_allocation
             ))) {
@@ -3474,6 +3602,9 @@ const char* lahar_err_name(uint32_t code) {
         case LAHAR_ERR_INVALID_TYPE: return "LAHAR_ERR_INVALID_TYPE";
         case LAHAR_ERR_COMPILATION_FAILED: return "LAHAR_ERR_COMPILATION_FAILED";
         case LAHAR_ERR_OUT_OF_SPACE: return "LAHAR_ERR_OUT_OF_SPACE";
+        case LAHAR_ERR_MEMORY_UNSATISFIABLE: return "LAHAR_ERR_MEMORY_UNSATISFIABLE";
+        case LAHAR_ERR_VERSION_UNSATISFIABLE: return "LAHAR_ERR_VERSION_UNSATISFIABLE";
+        case LAHAR_ERR_NOT_IMPLEMENTED: return "LAHAR_ERR_NOT_IMPLEMENTED";
         default: return "LAHAR_UNKNOWN_ERROR";
     }
 }
@@ -3539,7 +3670,8 @@ uint32_t lahar_builder_allocator_set(LaharAllocator* allocator) {
         !allocator->free_buffer ||
         !allocator->map ||
         !allocator->unmap ||
-        !allocator->flush
+        !allocator->flush ||
+        !allocator->invalidate
     ) {
         return LAHAR_ERR_ILLEGAL_PARAMS;
     }
@@ -3554,9 +3686,10 @@ void lahar_builder_set_debug_level(LaharDebugLevel level) {
     }
 }
 
-void lahar_builder_set_vulkan_version(uint32_t version) {
+void lahar_builder_set_vulkan_version(uint32_t version, bool required) {
     if (lahar->instance == VK_NULL_HANDLE) {
         lahar->vkversion = version;
+        lahar->require_min_version = required;
     }
 }
 
@@ -3926,7 +4059,7 @@ void lahar_deinit(void) {
                 }
 
                 if (attachment->image != VK_NULL_HANDLE && lahar->gpu_allocator) {
-                    lahar->gpu_allocator->free_image(lahar->gpu_allocator, lahar, &attachment->image, &attachment->img_allocation);
+                    lahar->gpu_allocator->free_image(lahar->gpu_allocator, attachment->image, attachment->img_allocation);
                 }
             }
 
@@ -3961,7 +4094,9 @@ void lahar_deinit(void) {
     #if defined(LAHAR_USE_VMA)
     __lahar_deinit_vma();
     #else
-    lahar_freelist_deinit();
+    if (lahar->gpu_allocator_defaulted && lahar->gpu_allocator) {
+        lahar_allocator_freelist_deinit(lahar->gpu_allocator);
+    }
     #endif
 
     if (lahar->pool != VK_NULL_HANDLE && vkDestroyCommandPool) {
@@ -4148,21 +4283,51 @@ uint32_t __lahar_build_instance(void) {
     // Assume the first window is sufficient
     __lahar_temp_extensions(window, &ext_count, &extensions);
 
-    VkApplicationInfo appinfo = {
-        .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-        .pApplicationName = lahar->appname ? lahar->appname : "Lahar",
-        .applicationVersion = lahar->appversion != 0 ? lahar->appversion : VK_MAKE_VERSION(1, 0, 0),
-        .pEngineName = "None",
-        .engineVersion = VK_MAKE_VERSION(1, 0, 0),
-        .apiVersion = lahar->vkversion != 0 ? lahar->vkversion : VK_API_VERSION_1_3
-    };
+    uint32_t requested_version = lahar->vkversion != 0 ? lahar->vkversion : LAHAR_DEFAULT_VK_VERSION;
+    uint32_t available_version = 0;
 
-    VkInstanceCreateInfo createinfo = {
-        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-        .pApplicationInfo = &appinfo,
-        .enabledExtensionCount = (uint32_t)ext_count,
-        .ppEnabledExtensionNames = (const char* const *)extensions
-    };
+    VkApplicationInfo appinfo = ZINIT;
+    VkInstanceCreateInfo createinfo = ZINIT;
+
+    if (vkEnumerateInstanceVersion) {
+        if ((lahar->vkresult = vkEnumerateInstanceVersion(&available_version))) {
+            goto end;
+        }
+
+        // Refuse to handle other variants, they're functionally different APIs
+        if (VK_API_VERSION_VARIANT(available_version) != 0) {
+            err = LAHAR_ERR_VERSION_UNSATISFIABLE;
+            goto end;
+        }
+    }
+    else {
+        available_version = VK_MAKE_API_VERSION(0, 1, 0, 0);
+    }
+
+    if (lahar->require_min_version) {
+        if (available_version < requested_version) {
+            err = LAHAR_ERR_VERSION_UNSATISFIABLE;
+            goto end;
+        }
+    }
+
+    if (available_version < requested_version) {
+        requested_version = available_version;
+    }
+
+    lahar->vkversion = requested_version;
+
+    appinfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    appinfo.pApplicationName = lahar->appname ? lahar->appname : "Lahar";
+    appinfo.applicationVersion = lahar->appversion != 0 ? lahar->appversion : VK_MAKE_VERSION(1, 0, 0);
+    appinfo.pEngineName = "None";
+    appinfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
+    appinfo.apiVersion = requested_version;
+
+    createinfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    createinfo.pApplicationInfo = &appinfo;
+    createinfo.enabledExtensionCount = (uint32_t)ext_count;
+    createinfo.ppEnabledExtensionNames = (const char* const *)extensions;
 
     if ((lahar->vkresult = vkEnumerateInstanceLayerProperties(&avail_layer_count, NULL)) != VK_SUCCESS) {
         err = LAHAR_ERR_VK_ERR;
@@ -4174,7 +4339,6 @@ uint32_t __lahar_build_instance(void) {
         err = LAHAR_ERR_VK_ERR;
         goto end;
     }
-
 
     if (lahar->wantvalidation) {
         for (size_t i = 0; i < avail_layer_count; i++) {
@@ -4192,17 +4356,9 @@ uint32_t __lahar_build_instance(void) {
         goto end;
     }
 
-
     if ((err = lahar_load_instance(__lahar_loader_inst))) {
         goto end;
     }
-
-    if (vkEnumerateInstanceVersion) {
-        if ((lahar->vkresult = vkEnumerateInstanceVersion(&lahar->vkversion))) {
-            goto end;
-        }
-    }
-
 
     if (lahar->wantvalidation) {
         if (!dbg_layer_found) {
@@ -4257,6 +4413,7 @@ uint32_t __lahar_build_physdev(void) {
     LaharDeviceScoreFunc scorer = lahar->score_func ? lahar->score_func : __lahar_default_scorer;
     int64_t best_dev = -1;
     int64_t best_score = -1;
+    LaharDeviceInfo* info = NULL;
 
     if ((lahar->vkresult = vkEnumeratePhysicalDevices(lahar->instance, &dev_count, NULL)) != VK_SUCCESS) {
         err = LAHAR_ERR_VK_ERR;
@@ -4352,9 +4509,14 @@ uint32_t __lahar_build_physdev(void) {
         goto end;
     }
 
+    info = &dev_infos[best_dev];
+
+    if (info->properties.apiVersion < lahar->vkversion) {
+        lahar->vkversion = info->properties.apiVersion;
+    }
+
     if (lahar->wantvalidation) {
         VkDebugUtilsMessengerCallbackDataEXT cbdata = ZINIT;
-        LaharDeviceInfo* info = &dev_infos[best_dev];
 
         char msgbuf[512];
         memset(msgbuf, 0, sizeof(msgbuf));
@@ -4370,7 +4532,7 @@ uint32_t __lahar_build_physdev(void) {
         }
     }
 
-    lahar->physdev_info = dev_infos[best_dev];
+    lahar->physdev_info = *info;
 
 end:
     lahar_temp_mpop();
@@ -4503,8 +4665,9 @@ uint32_t __lahar_build_swapchain(void) {
         goto end;
     }
     #else
-    if ((err = __lahar_init_freelist_alloc())) {
-        goto end;
+    if (!lahar->gpu_allocator) {
+        lahar->gpu_allocator_defaulted = true;
+        lahar->gpu_allocator = lahar_allocator_freelist_init();
     }
     #endif
 
@@ -4654,10 +4817,28 @@ uint32_t __lahar_build_swapchain(void) {
             for (size_t k = 0; k < winstate->swap_size; k++) {
                 LaharAttachment* attachment = &attachment_list[k];
 
+                LaharAllocationCreateInfo alloc_create_info = {
+                    .usage = LAHAR_MU_DEVICE_ONLY,
+                };
+
+                switch (attachment_config->role) {
+                    case LAHAR_ATTROLE_COLOR:
+                    case LAHAR_ATTROLE_USER:
+                        alloc_create_info.role = LAHAR_AR_COLOR_ATTACHMENT;
+                        break;
+                    case LAHAR_ATTROLE_DEPTH:
+                    case LAHAR_ATTROLE_STENCIL:
+                    case LAHAR_ATTROLE_DEPTH_STENCIL:
+                        alloc_create_info.role = LAHAR_AR_DEPTH_STENCIL_ATTACHMENT;
+                        break;
+                    default:
+                        break;
+                }
+
                 if ((err = lahar->gpu_allocator->alloc_image(
                     lahar->gpu_allocator,
-                    lahar,
                     &attachment_config->img_info,
+                    &alloc_create_info,
                     &attachment->image,
                     &attachment->img_allocation
                 ))) {
@@ -5565,7 +5746,7 @@ uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, V
 
     const size_t max_states = sizeof(dynamic_states) / sizeof(dynamic_states[0]);
 
-    const bool is_vulkan_1_3 = lahar->vkversion >= VK_MAKE_VERSION(1, 3, 0);
+    const bool is_vulkan_1_3 = VK_API_VERSION_MINOR(lahar->vkversion) >= 3;
     const bool has_dynamic_1 = lahar_extension_has_device(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME);
     const bool has_dynamic_2 = lahar_extension_has_device(VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME);
     const bool has_dynamic_3 = lahar_extension_has_device(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
@@ -5579,6 +5760,7 @@ uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, V
     VkPipelineMultisampleStateCreateInfo multisampling_info = ZINIT;
     VkPipelineColorBlendStateCreateInfo blend_state = ZINIT;
     VkPipelineRenderingCreateInfo rendering_info = ZINIT;
+    VkPipelineDepthStencilStateCreateInfo depth_stencil_info = ZINIT;
     VkPipelineLayout chosen_layout = VK_NULL_HANDLE;
 
     const bool has_dynamic_rendering = lahar_extension_has_device(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
@@ -5594,7 +5776,7 @@ uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, V
     LaharShaderVarInfo* shader_vars = NULL;
 
     // Step 1: compile any non-spv stages
-    while (builder->stages[stage_index].code && stage_index < LAHAR_MAX_SHADER_STAGES) {
+    while (stage_index < LAHAR_MAX_SHADER_STAGES && builder->stages[stage_index].code) {
         const LaharShaderStage* stage = &builder->stages[stage_index];
         LaharShaderStage* outstage = &final_stages[stage_index];
 
@@ -5636,10 +5818,11 @@ uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, V
         stage_index++;
     }
 
+    // TODO: potential leak here, figure out how to fix
     stage_index = 0;
 
     // Step 2: build stage modules
-    while (final_stages[stage_index].code && stage_index < LAHAR_MAX_SHADER_STAGES) {
+    while (stage_index < LAHAR_MAX_SHADER_STAGES && final_stages[stage_index].code) {
         const LaharShaderStage* stage = &final_stages[stage_index];
 
         module_infos[stage_index].sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -5798,6 +5981,14 @@ uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, V
     dynamic_state_info.dynamicStateCount = dynamic_state_count;
     dynamic_state_info.pDynamicStates = dynamic_states;
 
+    depth_stencil_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depth_stencil_info.depthTestEnable  = (builder->depth_test  != LAHAR_SDTM_OFF);
+    depth_stencil_info.depthWriteEnable = (builder->depth_write != LAHAR_SDWM_OFF);
+    depth_stencil_info.depthCompareOp   = builder->depth_compare_op == LAHAR_SDCO_DEFAULT ? VK_COMPARE_OP_LESS : (VkCompareOp)(builder->depth_compare_op - 1);
+    depth_stencil_info.depthBoundsTestEnable = VK_FALSE;
+    depth_stencil_info.stencilTestEnable = VK_FALSE;
+    depth_stencil_info.minDepthBounds = 0.0f;
+    depth_stencil_info.maxDepthBounds = 1.0f;
 
     input_assembly_info.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
     input_assembly_info.primitiveRestartEnable = VK_FALSE;
@@ -5995,6 +6186,7 @@ uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, V
     pipeline_info.pMultisampleState = builder->pMultisampleState ? builder->pMultisampleState : &multisampling_info;
     pipeline_info.pColorBlendState = builder->pColorBlendState ? builder->pColorBlendState : &blend_state;
     pipeline_info.pDynamicState = builder->pDynamicState ? builder->pDynamicState : &dynamic_state_info;
+    pipeline_info.pDepthStencilState = builder->pDepthStencilState ? builder->pDepthStencilState : &depth_stencil_info;
     pipeline_info.layout = chosen_layout;
     pipeline_info.renderPass = builder->renderPass;
     pipeline_info.subpass = builder->use_subpass_value ? builder->subpass : 0;
@@ -6110,7 +6302,9 @@ void lahar_shader_builder_set_blend_mode(LaharShaderBuilder* builder, LaharShade
         }
     }
     else {
-        LAHAR_ASSERT(false && "Not yet implemented");
+        // Fatal in all builds: compiled out, this would silently leave the
+        // blend states unconfigured and render wrong instead of failing
+        LAHAR_FATAL_ASSERT(false && "Not yet implemented"); // TODO: non-opaque blend mode
     }
 }
 
@@ -7112,6 +7306,16 @@ uint32_t __lahar_spv_v1_build_section_offsets(LaharSPVInfo* info) {
         uint16_t opcode = word & 0xFFFF;
         uint16_t word_count = (uint16_t)(word >> 16);
 
+        // This loop sees every instruction from the header to the functions
+        // section before any other pass runs, and every later walker re-walks
+        // sub-ranges of the same stream with the same strides. Validating the
+        // stride here therefore guarantees termination and in-bounds reads of
+        // instruction words for all of them. (Zero word_count is real-world:
+        // it otherwise strides by 0 and hangs forever.)
+        if (word_count == 0 || index + (uint64_t)word_count > words) {
+            return LAHAR_ERR_MALFORMED_CODE;
+        }
+
         switch (phase) {
             case 0: { // 0: in the capabilities
                 if (__lahar_spv_op_is_extension(opcode)) {
@@ -7204,7 +7408,9 @@ uint32_t __lahar_spv_v1_count_types(LaharSPVInfo* info) {
     const LaharShaderStage* stage = info->stage;
     const uint32_t* code = (const uint32_t*)stage->code;
 
-    LAHAR_ASSERT(stage && code);
+    if (!stage || !code) {
+        return LAHAR_ERR_ILLEGAL_PARAMS;
+    }
 
     info->type_count = 0;
 
@@ -8273,6 +8479,14 @@ uint32_t lahar_shader_introspect(
         const LaharShaderStage* stage = &stages[i];
         lahar_trace("Doing first pass of %s stage", __lahar_shader_stage_name(stage));
 
+        // 5 words of header minimum, and whole words only; everything
+        // downstream indexes this as a uint32 stream and trusts length/4
+        if (!stage->code || stage->length % 4 != 0 || stage->length / 4 < 5) {
+            lahar_trace("Shader stage code length is not valid SPIR-V");
+            err = LAHAR_ERR_MALFORMED_CODE;
+            goto cleanup;
+        }
+
         if (__lahar_shader_stage_validate_spv_header((const uint32_t*)stage->code) != LAHAR_ERR_SUCCESS) {
             lahar_trace("Shader stage had invalid SPIR-V header");
             err = LAHAR_ERR_MALFORMED_CODE;
@@ -8382,7 +8596,10 @@ uint32_t lahar_shader_introspect(
     }
 
 cleanup:
-    LAHAR_ASSERT(produced_info_count <= total_slots); // Very bad memory nono
+    // Postmortem count/fill divergence detector. Fatal-tier: user-supplied
+    // SPIR-V feeds both passes, and if they disagree the writes above already
+    // overran the arena -- crash loudly in every build rather than corrupt.
+    LAHAR_FATAL_ASSERT(produced_info_count <= total_slots); // Very bad memory nono
 
     lahar_temp_mpop();
     return err;
@@ -8716,803 +8933,1618 @@ const char* lahar_vkformat_string(VkFormat format) {
 
 
 
-#ifndef LAHAR_FL_BLOCK_SIZE
-    #define LAHAR_FL_BLOCK_SIZE (64ull * 1024ull * 1024ull)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// FL - free list
+// SL - sub list
+#define LAHAR_FREELIST_MAGIC 0xe654fa462a3501cf
+#define LAHAR_FREELIST_MEM_TYPES VK_MAX_MEMORY_TYPES
+#define LAHAR_FREELIST_FL_COUNT  21   /* fl 0..20 covers 2^8 .. 2^29 */
+#define LAHAR_FREELIST_SL_LOG2   5
+#define LAHAR_FREELIST_SL_COUNT  (1u << LAHAR_FREELIST_SL_LOG2)
+#define LAHAR_FREELIST_MIN_LOG2  8 // min allocation size is 2^8 (256)
+#define LAHAR_FREELIST_MIN_BLOCK ((VkDeviceSize)1 << LAHAR_FREELIST_MIN_LOG2)
+#define LAHAR_FREELIST_MAX_BLOCK ((VkDeviceSize)1 << (LAHAR_FREELIST_FL_COUNT + LAHAR_FREELIST_MIN_LOG2))
+// Largest request that is guaranteed to still map into the last bin (fl 20, sl 31)
+// after __lahar_fl_map_up's round-up add. The bins only cover sizes with
+// msb <= FL_COUNT + MIN_LOG2 - 1 (i.e. < 2^29), and map_up can add up to
+// (MAX_BLOCK/2) >> SL_LOG2 - 1 before remapping, so anything above this
+// threshold must take the dedicated path.
+#define LAHAR_FREELIST_MAX_ALLOC (LAHAR_FREELIST_MAX_BLOCK - (LAHAR_FREELIST_MAX_BLOCK >> (LAHAR_FREELIST_SL_LOG2 + 1)))
+#define LAHAR_FREELIST_PREFERRED_CHUNK_SIZE ((VkDeviceSize)1024 * 1024 * 256) // 256 mib
+// A heap at or below this size is "small" (integrated parts, BAR heaps); chunks
+// there are sized relative to the heap instead of at the flat preferred size.
+#define LAHAR_FREELIST_SMALL_HEAP_SIZE ((VkDeviceSize)1024 * 1024 * 1024) // 1 gib
+#define LAHAR_FREELIST_SMALL_HEAP_DIVISOR 8
+// How many times the preferred size may be halved when ramping up a type, and
+// when retrying a chunk that failed device OOM. 3 gives 1/8, 1/4, 1/2.
+#define LAHAR_FREELIST_CHUNK_SHIFT_MAX 3
+
+lahar_static_assert(LAHAR_FREELIST_SL_COUNT <= 32, "sl bitmap must fit in uint32_t");
+lahar_static_assert(LAHAR_FREELIST_FL_COUNT <= 32, "fl bitmap must fit in uint32_t");
+lahar_static_assert(LAHAR_FREELIST_MIN_LOG2 >= LAHAR_FREELIST_SL_LOG2, "smallest block must have room for sl bits below its msb");
+
+struct LaharFreelistAllocator;
+typedef struct LaharFreelistAllocator LaharFreelistAllocator;
+
+struct LaharFreelistMemChunk;
+typedef struct LaharFreelistMemChunk LaharFreelistMemChunk;
+
+struct LaharFreelistChunkVec;
+typedef struct LaharFreelistChunkVec LaharFreelistChunkVec;
+
+struct LaharFreelistSubAllocation;
+typedef struct LaharFreelistSubAllocation LaharFreelistSubAllocation;
+
+struct LaharFreelistMemReqs;
+typedef struct LaharFreelistMemReqs LaharFreelistMemReqs;
+
+#if !defined(__cplusplus)
+enum LaharGranularityClass;
+typedef enum LaharGranularityClass LaharGranularityClass;
 #endif
 
-#ifndef LAHAR_FL_DEDICATED_THRESHOLD
-    #define LAHAR_FL_DEDICATED_THRESHOLD (LAHAR_FL_BLOCK_SIZE / 4ull)
-#endif
-
-struct LaharFlBlock;
-typedef struct LaharFlBlock LaharFlBlock;
-
-struct LaharFlAlloc;
-typedef struct LaharFlAlloc LaharFlAlloc;
-
-/* One suballocation (or hole) inside a block, or a dedicated allocation.
- * This is what a LaharAllocation actually points at. */
-struct LaharFlAlloc {
-    LaharFlBlock* block;        // Owning block; NULL means dedicated
-    VkDeviceMemory memory;      // Dedicated only; block allocs use block->memory
-    VkDeviceSize offset;        // Offset within the device memory
-    VkDeviceSize size;          // Size (padded to VkMemoryRequirements.size)
-    uint32_t mem_type;          // Memory type index
-    bool is_free;               // Block nodes only: this node is a hole
-    bool is_linear;             // Buffers/linear images vs optimal images
-    const char* tag;            // Optional user name for leak reports
-    void* mapped;               // Dedicated only: lazy persistent map
-    LaharFlAlloc* prev;         // Block: neighbor by offset. Dedicated: list link
-    LaharFlAlloc* next;
-};
-
-struct LaharFlBlock {
-    VkDeviceMemory memory;
+struct LaharFreelistMemReqs {
     VkDeviceSize size;
-    VkDeviceSize used;          // Bytes in live allocations
-    uint32_t mem_type;
-    void* mapped;               // Persistent map if host visible, else NULL
-    LaharFlAlloc* head;         // All nodes (free and used), sorted by offset
+    VkDeviceSize alignment;
+    VkDeviceSize padded_size;
+    uint32_t type_mask;
+    bool prefers_dedicated;
+    bool requires_dedicated;
 };
 
-typedef struct LaharFlPool {
-    LaharFlBlock** blocks;
+enum LaharGranularityClass {
+    LAHAR_GC_LINEAR,
+    LAHAR_GC_NONLINEAR,
+};
+
+#if defined(__cplusplus)
+typedef enum LaharGranularityClass LaharGranularityClass;
+#endif
+
+// Every mem chunk is sort of its own universe. We can't coalesce
+// across them, and we can't mix types in the tlsf structure,
+// so basically just use them like they're completely separate allocator regions
+//
+// The mapping is chunk-wide and persistent. Vulkan allows only one vkMapMemory per
+// VkDeviceMemory, so suballocations share it: the chunk maps whole on
+// first request and stays mapped until the last user unmaps.
+struct LaharFreelistMemChunk {
+    VkDeviceMemory handle;
+    VkDeviceSize size;
+    uint32_t type_index;
+    uint32_t live_count;
+    void* mapped;
+    uint32_t map_count;
+    LaharFreelistSubAllocation* blocks;
+    LaharFreelistSubAllocation* bins[LAHAR_FREELIST_FL_COUNT][LAHAR_FREELIST_SL_COUNT];
+    uint32_t bin_bitmap;
+    uint32_t subbin_bitmap[LAHAR_FREELIST_FL_COUNT];
+    LaharGranularityClass granularity_class;
+    bool dedicated;
+};
+
+struct LaharFreelistSubAllocation {
+    LaharFreelistMemChunk* chunk;
+    VkDeviceSize offset, size;
+    LaharFreelistSubAllocation* prev_phys;
+    LaharFreelistSubAllocation* next_phys;
+    LaharFreelistSubAllocation* prev_free;
+    LaharFreelistSubAllocation* next_free;
+    bool free;
+};
+
+struct LaharFreelistChunkVec {
+    LaharFreelistMemChunk** chunks;
     size_t count, cap;
-} LaharFlPool;
+};
 
-typedef struct LaharFlState {
-    LaharFlPool pools[VK_MAX_MEMORY_TYPES];
-    LaharFlAlloc* dedicated_head;
-    uint64_t reserved;
-    uint64_t used;
-    uint64_t live_allocs;
-    uint64_t block_count;
-    uint64_t dedicated_count;
-} LaharFlState;
 
-static LaharFlState __lahar_fl = ZINIT;
+struct LaharFreelistAllocator {
+    LaharAllocator vtable;
+    uint64_t magic;
+    LaharFreelistChunkVec types[LAHAR_FREELIST_MEM_TYPES];
+};
 
-static VkDeviceSize __lahar_fl_align_up(VkDeviceSize v, VkDeviceSize a) {
-    return (v + a - 1) & ~(a - 1);
+// Count leading zeroes - position of the highest set bit
+static uint32_t __lahar_clz64(uint64_t num) {
+#if defined(__has_builtin)
+    #if __has_builtin(__builtin_clzg)
+        return (uint32_t)__builtin_clzg(num, 64);
+    #endif
+#elif defined(__GNUC__) || defined(__clang__)
+    return num ? (uint32_t)__builtin_clzll(num) : 64u;
+#elif defined(_MSC_VER)
+    unsigned long i;
+    return _BitScanReverse64(&i, num) ? 63u - (uint32_t)i : 64u;
+#endif
+
+    int n = 0;
+    if (num == 0) return 64;
+    if ((num >> 32) == 0) { n += 32; num <<= 32; }
+    if ((num >> 48) == 0) { n += 16; num <<= 16; }
+    if ((num >> 56) == 0) { n +=  8; num <<=  8; }
+    if ((num >> 60) == 0) { n +=  4; num <<=  4; }
+    if ((num >> 62) == 0) { n +=  2; num <<=  2; }
+    if ((num >> 63) == 0) { n +=  1; }
+    return (uint32_t)n; // TODO: spurious sign casting?
 }
 
-static VkDeviceSize __lahar_fl_align_down(VkDeviceSize v, VkDeviceSize a) {
-    return v & ~(a - 1);
+// Count trailing zeroes — position of the lowest set bit
+static uint32_t __lahar_ctz32(uint32_t num) {
+#if defined(__has_builtin)
+    #if __has_builtin(__builtin_ctzg)
+        return (uint32_t)__builtin_ctzg(num, 32);
+    #endif
+#elif defined(__GNUC__) || defined(__clang__)
+    return num ? (uint32_t)__builtin_ctz(num) : 32u;
+#elif defined(_MSC_VER)
+    unsigned long i;
+    return _BitScanForward(&i, num) ? (uint32_t)i : 32u;
+#endif
+
+    if (num == 0) { return 32; }
+    uint32_t n = 0;
+    if ((num & 0x0000FFFF) == 0) { n += 16; num >>= 16; }
+    if ((num & 0x000000FF) == 0) { n +=  8; num >>=  8; }
+    if ((num & 0x0000000F) == 0) { n +=  4; num >>=  4; }
+    if ((num & 0x00000003) == 0) { n +=  2; num >>=  2; }
+    if ((num & 0x00000001) == 0) { n +=  1; }
+    return n;
 }
 
-static uint32_t __lahar_fl_popcount(uint32_t v) {
-    uint32_t c = 0;
-    while (v) { c += v & 1; v >>= 1; }
-    return c;
+// Util: round up to the quantum
+static VkDeviceSize __lahar_fl_round_up(VkDeviceSize size) {
+    return (size + LAHAR_FREELIST_MIN_BLOCK - 1) & ~(LAHAR_FREELIST_MIN_BLOCK - 1);
 }
 
-static VkMemoryPropertyFlags __lahar_fl_type_flags(uint32_t mem_type) {
-    return lahar->physdev_info.memprops.memoryTypes[mem_type].propertyFlags;
+// Util: whether a chunk of one granularity class may host the other. Mixing
+// linear and non-linear resources in one VkDeviceMemory is only hazardous when
+// the device reports a bufferImageGranularity above one byte; below that there
+// are no shared pages to straddle, so mixing is free occupancy.
+static bool __lahar_fl_must_segregate(void) {
+    return lahar->physdev_info.properties.limits.bufferImageGranularity > 1;
 }
 
-static bool __lahar_fl_is_coherent(uint32_t mem_type) {
-    return (__lahar_fl_type_flags(mem_type) & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
-}
-
-/* Translate a usage class into required/preferred property flags */
-static uint32_t __lahar_fl_usage_flags(LaharMemoryUsage usage, VkMemoryPropertyFlags* required, VkMemoryPropertyFlags* preferred) {
-    switch (usage) {
-        case LAHAR_MU_GPU_ONLY:
-            *required = 0;
-            *preferred = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-            break;
-        case LAHAR_MU_UPLOAD:
-            *required = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
-            *preferred = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-            break;
-        case LAHAR_MU_UPLOAD_DEVICE:
-            /* BAR/ReBAR memory when present, plain host visible otherwise */
-            *required = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
-            *preferred = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-            break;
-        case LAHAR_MU_READBACK:
-            *required = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
-            *preferred = VK_MEMORY_PROPERTY_HOST_CACHED_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-            break;
-        default:
-            return LAHAR_ERR_ILLEGAL_PARAMS;
+// TLSF: map a size to the (fl, sl) bin, rounding dowards (so this would be what you'd use on a new block insert)
+static void __lahar_fl_map_down(VkDeviceSize size, uint32_t* fl, uint32_t* sl) {
+    if (size < LAHAR_FREELIST_MIN_BLOCK) {
+        size = LAHAR_FREELIST_MIN_BLOCK;
     }
 
-    return LAHAR_ERR_SUCCESS;
+    uint32_t msb = 63 - __lahar_clz64(size); // equivalent to an fls, position of the leading set bit
+    *fl = msb - LAHAR_FREELIST_MIN_LOG2; // rebase so that msb == 8, since min tracking is 256 bytes
+    *sl = (uint32_t)(size >> (msb - LAHAR_FREELIST_SL_LOG2)) & (LAHAR_FREELIST_SL_COUNT - 1); // drop the bits we don't care about, remove leading 1, effectively rounds down
+
+    // size exceeds bin range; should have been picked up as dedicated allocation
+    LAHAR_ASSERT(*fl < LAHAR_FREELIST_FL_COUNT);
 }
 
-/* Pick the best memory type from type_bits for the given flags.
- * Returns LAHAR_ERR_ALLOC_FAILED when no type qualifies. */
-static uint32_t __lahar_fl_find_type(uint32_t type_bits, VkMemoryPropertyFlags required, VkMemoryPropertyFlags preferred, uint32_t* type_out) {
-    const VkPhysicalDeviceMemoryProperties* props = &lahar->physdev_info.memprops;
+// TLSF: map a size to the (fl, sl) bin, rounding upwards (so this would be what you'd use on a request)
+static void __lahar_fl_map_up(VkDeviceSize size, uint32_t* fl, uint32_t* sl) {
+    if (size < LAHAR_FREELIST_MIN_BLOCK) {
+        size = LAHAR_FREELIST_MIN_BLOCK;
+    }
 
-    uint32_t best = UINT32_MAX;
-    int32_t best_score = -1;
+    uint32_t msb = 63 - __lahar_clz64(size);
+    size += ((VkDeviceSize)1 << (msb - LAHAR_FREELIST_SL_LOG2)) - 1;
+    __lahar_fl_map_down(size, fl, sl);  // recompute msb — the add can carry
+}
 
-    for (uint32_t i = 0; i < props->memoryTypeCount; i++) {
-        if (!(type_bits & (1u << i))) { continue; }
+// Util: validate state - ouchie my brain
+// Only defined under LAHAR_DEBUG; all call sites are gated the same way.
+#ifdef LAHAR_DEBUG
+static void __lahar_fl_validate_chunk(LaharFreelistMemChunk* chunk) {
+    // walk blocks in address order:
+    // x  offset % 256 == 0
+    // x  size % 256 == 0 && size >= 256
+    // x  no two adjacent free blocks (coalescing missed one)
+    // x offsets + sizes tile the chunk exactly, no gaps or overlap
+    // walk each bin list:
+    // x every block's size actually maps to the bin it's in
+    // x prev_free/next_free are consistent both directions
+    // x bitmap bit set iff list non-empty
 
-        VkMemoryPropertyFlags flags = props->memoryTypes[i].propertyFlags;
-        if ((flags & required) != required) { continue; }
+    LaharFreelistSubAllocation* block = chunk->blocks;
+    VkDeviceSize expected_offset = 0;
 
-        int32_t score = (int32_t)__lahar_fl_popcount(flags & preferred);
 
-        if (score > best_score) {
-            best_score = score;
-            best = i;
+    uint32_t live = 0;
+
+    if (chunk->dedicated) {
+        LAHAR_ASSERT(block->next_phys == NULL); // More than one physical block in a dedicatd allocation
+        LAHAR_ASSERT(block->size == chunk->size); // Didn't map the whole thing
+        LAHAR_ASSERT(block->offset == 0); // Not at the start?
+        LAHAR_ASSERT(chunk->live_count == (block->free ? 0u : 1u)); // count matches the sole block
+        return;
+    }
+
+    while (block) {
+        LAHAR_ASSERT(block->offset % LAHAR_FREELIST_MIN_BLOCK == 0); // at a multiple of the quantum in offset
+        LAHAR_ASSERT(block->size % LAHAR_FREELIST_MIN_BLOCK == 0); // a multiple of the quantum in size
+        LAHAR_ASSERT(block->size >= LAHAR_FREELIST_MIN_BLOCK); // bigger than the quantum
+        LAHAR_ASSERT(block->offset == expected_offset); // no gaps
+
+        expected_offset = block->offset + block->size;
+
+        if (!block->free) { live++; }
+
+        if (block->next_phys) {
+            LAHAR_ASSERT(!(block->free && block->next_phys->free)); // no adjacent free blocks
+            LAHAR_ASSERT(block->next_phys->prev_phys == block); // list pointers consistent
+        }
+
+        block = block->next_phys;
+    }
+
+    LAHAR_ASSERT(expected_offset == chunk->size); // the whole chunk is accounted for
+    LAHAR_ASSERT(live == chunk->live_count); // live_count tracks non-free blocks exactly
+
+    for(uint32_t fl = 0; fl < LAHAR_FREELIST_FL_COUNT; fl++) {
+        bool had_any = false;
+
+        for(uint32_t sl = 0; sl < LAHAR_FREELIST_SL_COUNT; sl++) {
+            LaharFreelistSubAllocation* list = chunk->bins[fl][sl];
+
+            bool has_list = chunk->bins[fl][sl] != NULL;
+            bool has_bit  = (chunk->subbin_bitmap[fl] & (1u << sl)) != 0;
+
+            LAHAR_ASSERT(has_list == has_bit); // bit and list status match
+            had_any |= has_list;
+
+            LaharFreelistSubAllocation* prev = NULL;
+            for (LaharFreelistSubAllocation* b = chunk->bins[fl][sl]; b; b = b->next_free) {
+                LAHAR_ASSERT(b->prev_free == prev);
+                LAHAR_ASSERT(b->free);
+
+                uint32_t bfl, bsl;
+                __lahar_fl_map_down(b->size, &bfl, &bsl);
+                LAHAR_ASSERT(bfl == fl && bsl == sl);  // filed in the right bin
+
+                prev = b;
+            }
+        }
+
+        bool has_bit = (chunk->bin_bitmap & (1u << fl)) != 0;
+
+        LAHAR_ASSERT(had_any == has_bit);
+    }
+}
+
+// Util: validate state
+static void __lahar_fl_validate(LaharFreelistAllocator* self) {
+    for (uint32_t i = 0; i < LAHAR_FREELIST_MEM_TYPES; i++) {
+        LaharFreelistChunkVec* vec = &self->types[i];
+
+        for (uint32_t j = 0; j < vec->count; j++) {
+            __lahar_fl_validate_chunk(vec->chunks[j]);
+        }
+    }
+}
+#endif // LAHAR_DEBUG
+
+
+static void __lahar_fl_tlsf_insert(LaharFreelistMemChunk* chunk, LaharFreelistSubAllocation* block) {
+    if (chunk->dedicated) { return; }
+
+    uint32_t fl, sl;
+
+    __lahar_fl_map_down(block->size, &fl, &sl);
+
+    LaharFreelistSubAllocation* curhead = chunk->bins[fl][sl];
+
+    if (curhead) {
+        curhead->prev_free = block;
+    }
+
+    block->prev_free = NULL;
+    block->next_free = curhead;
+    chunk->bins[fl][sl] = block;
+
+    chunk->bin_bitmap |= 1u << fl;
+    chunk->subbin_bitmap[fl] |= 1u << sl;
+}
+
+static void __lahar_fl_tlsf_remove(LaharFreelistMemChunk* chunk, LaharFreelistSubAllocation* block) {
+    if (chunk->dedicated) { return; }
+
+    LaharFreelistSubAllocation* prev = block->prev_free;
+    LaharFreelistSubAllocation* next = block->next_free;
+
+    uint32_t fl, sl;
+    __lahar_fl_map_down(block->size, &fl, &sl);
+
+    if (prev) {
+        prev->next_free = next;
+    }
+    else {
+        chunk->bins[fl][sl] = next;
+    }
+
+    if (next) {
+        next->prev_free = prev;
+    }
+
+    // if we just cleared the bin, we have to unset the bit
+    if (!prev && !next) {
+        uint32_t mask = chunk->subbin_bitmap[fl] &= ~(1u << sl); // remove one bit
+
+        if (mask == 0) { // if all subbins are empty, the bin needs set empty
+            chunk->bin_bitmap &= ~(1u << fl);
         }
     }
 
-    if (best == UINT32_MAX) { return LAHAR_ERR_ALLOC_FAILED; }
-
-    *type_out = best;
-    return LAHAR_ERR_SUCCESS;
+    block->prev_free = NULL;
+    block->next_free = NULL;
 }
 
-static LaharFlAlloc* __lahar_fl_new_node(void) {
-    LaharFlAlloc* node = (LaharFlAlloc*)lahar_malloc(sizeof(LaharFlAlloc));
-    if (node) { memset(node, 0, sizeof(*node)); }
-    return node;
+// Util: Standard TLSF good-fit scan. Look for a free block in (fl, sl) or any
+// higher sl of the same fl; failing that, take the lowest non-empty sl of
+// the next non-empty fl. Assumes (fl, sl) came from __lahar_fl_map_up, so
+// any block found is guaranteed large enough.
+static LaharFreelistSubAllocation* __lahar_fl_tlsf_search(LaharFreelistMemChunk* chunk, uint32_t fl, uint32_t sl) {
+    uint32_t sl_map = chunk->subbin_bitmap[fl] & (~0u << sl);
+
+    if (!sl_map) {
+        const uint32_t fl_map = chunk->bin_bitmap & (~0u << (fl + 1));
+
+        if (!fl_map) { return NULL; }
+
+        fl = __lahar_ctz32(fl_map);
+        sl_map = chunk->subbin_bitmap[fl];
+    }
+
+    sl = __lahar_ctz32(sl_map);
+
+    return chunk->bins[fl][sl];
 }
 
-/* --------------------------------------------------------------- blocks */
+// Util: Carve [offset, offset + size) out of a free block that has already been
+// removed from the bins. Front/back remainders get filed back into the bins
+// as their own free blocks. offset and size must be quantum multiples within
+// the block, which makes any nonzero remainder >= the quantum automatically.
+static uint32_t __lahar_fl_block_split(
+    LaharFreelistMemChunk* chunk,
+    LaharFreelistSubAllocation* block,
+    VkDeviceSize offset,
+    VkDeviceSize size
+) {
+    LAHAR_ASSERT(offset % LAHAR_FREELIST_MIN_BLOCK == 0);
+    LAHAR_ASSERT(size % LAHAR_FREELIST_MIN_BLOCK == 0);
+    LAHAR_ASSERT(offset >= block->offset);
+    LAHAR_ASSERT(offset + size <= block->offset + block->size);
 
-static uint32_t __lahar_fl_block_create(uint32_t mem_type, VkDeviceSize size, LaharFlBlock** out) {
-    LaharFlBlock* block = (LaharFlBlock*)lahar_malloc(sizeof(LaharFlBlock));
-    if (!block) { return LAHAR_ERR_ALLOC_FAILED; }
-    memset(block, 0, sizeof(*block));
+    const VkDeviceSize front = offset - block->offset;
+    const VkDeviceSize back = (block->offset + block->size) - (offset + size);
 
-    LaharFlAlloc* node = __lahar_fl_new_node();
-    if (!node) { lahar_free(block); return LAHAR_ERR_ALLOC_FAILED; }
+    // quantum-aligned inputs mean a remainder is never a sliver too small to track
+    LAHAR_ASSERT(front == 0 || front >= LAHAR_FREELIST_MIN_BLOCK);
+    LAHAR_ASSERT(back == 0 || back >= LAHAR_FREELIST_MIN_BLOCK);
 
-    VkMemoryAllocateInfo info = ZINIT;
-    info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    info.allocationSize = size;
-    info.memoryTypeIndex = mem_type;
+    LaharFreelistSubAllocation* front_block = NULL;
+    LaharFreelistSubAllocation* back_block = NULL;
 
-    if ((lahar->vkresult = vkAllocateMemory(lahar->device, &info, lahar->vkalloc, &block->memory)) != VK_SUCCESS) {
-        lahar_free(node);
-        lahar_free(block);
-        return LAHAR_ERR_VK_ERR;
+    // allocate everything up front so failure can't leave a half-split block
+    if (front) {
+        front_block = (LaharFreelistSubAllocation*)lahar_malloc(sizeof(*front_block));
+        if (!front_block) { return LAHAR_ERR_ALLOC_FAILED; }
     }
 
-    if (__lahar_fl_type_flags(mem_type) & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
-        if ((lahar->vkresult = vkMapMemory(lahar->device, block->memory, 0, VK_WHOLE_SIZE, 0, &block->mapped)) != VK_SUCCESS) {
-            vkFreeMemory(lahar->device, block->memory, lahar->vkalloc);
-            lahar_free(node);
-            lahar_free(block);
-            return LAHAR_ERR_VK_ERR;
-        }
-    }
-
-    block->size = size;
-    block->mem_type = mem_type;
-
-    /* One big hole spanning the whole block */
-    node->block = block;
-    node->size = size;
-    node->is_free = true;
-    block->head = node;
-
-    LaharFlPool* pool = &__lahar_fl.pools[mem_type];
-
-    if (pool->count >= pool->cap) {
-        lahar_vec_expand(pool->blocks, pool->cap) else {
-            vkUnmapMemory(lahar->device, block->memory);
-            vkFreeMemory(lahar->device, block->memory, lahar->vkalloc);
-            lahar_free(node);
-            lahar_free(block);
+    if (back) {
+        back_block = (LaharFreelistSubAllocation*)lahar_malloc(sizeof(*back_block));
+        if (!back_block) {
+            if (front_block) { lahar_free(front_block); }
             return LAHAR_ERR_ALLOC_FAILED;
         }
     }
 
-    pool->blocks[pool->count++] = block;
+    if (front_block) {
+        memset(front_block, 0, sizeof(*front_block));
+        front_block->chunk = chunk;
+        front_block->offset = block->offset;
+        front_block->size = front;
+        front_block->free = true;
 
-    __lahar_fl.reserved += size;
-    __lahar_fl.block_count++;
+        front_block->prev_phys = block->prev_phys;
+        front_block->next_phys = block;
 
-    *out = block;
-    return LAHAR_ERR_SUCCESS;
-}
-
-static void __lahar_fl_block_destroy(LaharFlBlock* block) {
-    LaharFlPool* pool = &__lahar_fl.pools[block->mem_type];
-
-    /* Swap-remove from the pool */
-    for (size_t i = 0; i < pool->count; i++) {
-        if (pool->blocks[i] == block) {
-            pool->blocks[i] = pool->blocks[--pool->count];
-            break;
-        }
-    }
-
-    LaharFlAlloc* node = block->head;
-    while (node) {
-        LaharFlAlloc* next = node->next;
-        lahar_free(node);
-        node = next;
-    }
-
-    if (block->mapped && vkUnmapMemory) {
-        vkUnmapMemory(lahar->device, block->memory);
-    }
-
-    if (vkFreeMemory) {
-        vkFreeMemory(lahar->device, block->memory, lahar->vkalloc);
-    }
-
-    __lahar_fl.reserved -= block->size;
-    __lahar_fl.block_count--;
-
-    lahar_free(block);
-}
-
-/* Attempt to carve a suballocation out of a block. Free-node coalescing is
- * maintained on free, so a free node's direct neighbors are always used
- * nodes (or list ends), which keeps the granularity checks local. */
-static bool __lahar_fl_try_place(LaharFlBlock* block, VkDeviceSize size, VkDeviceSize alignment, bool is_linear, LaharFlAlloc** out) {
-    const VkDeviceSize gran = lahar->physdev_info.properties.limits.bufferImageGranularity;
-
-    for (LaharFlAlloc* node = block->head; node; node = node->next) {
-        if (!node->is_free) { continue; }
-
-        VkDeviceSize aligned = __lahar_fl_align_up(node->offset, alignment);
-
-        /* If the previous used neighbor has different linearity and ends on
-         * the same granularity page we'd start on, push to the next page */
-        if (gran > 1 && node->prev && node->prev->is_linear != is_linear) {
-            VkDeviceSize prev_end = node->prev->offset + node->prev->size;
-
-            if ((prev_end - 1) / gran == aligned / gran) {
-                aligned = __lahar_fl_align_up(aligned, gran);
-            }
-        }
-
-        const VkDeviceSize node_end = node->offset + node->size;
-        if (aligned < node->offset || aligned + size > node_end) { continue; }
-
-        /* Same page-sharing check against the next used neighbor */
-        if (gran > 1 && node->next && node->next->is_linear != is_linear) {
-            if ((aligned + size - 1) / gran == node->next->offset / gran) { continue; }
-        }
-
-        const VkDeviceSize front = aligned - node->offset;
-        const VkDeviceSize back = node_end - (aligned + size);
-
-        LaharFlAlloc* alloc = NULL;
-
-        if (front > 0) {
-            /* Keep the original node as the front hole, insert the
-             * allocation after it */
-            alloc = __lahar_fl_new_node();
-            if (!alloc) { return false; }
-
-            alloc->prev = node;
-            alloc->next = node->next;
-            if (node->next) { node->next->prev = alloc; }
-            node->next = alloc;
-
-            node->size = front;
+        if (block->prev_phys) {
+            block->prev_phys->next_phys = front_block;
         }
         else {
-            /* The allocation starts exactly at the hole, reuse the node */
-            alloc = node;
+            chunk->blocks = front_block;
         }
 
-        alloc->block = block;
-        alloc->memory = VK_NULL_HANDLE;
-        alloc->offset = aligned;
-        alloc->size = size;
-        alloc->mem_type = block->mem_type;
-        alloc->is_free = false;
-        alloc->is_linear = is_linear;
-        alloc->tag = NULL;
-        alloc->mapped = NULL;
+        block->prev_phys = front_block;
 
-        if (back > 0) {
-            LaharFlAlloc* hole = __lahar_fl_new_node();
+        __lahar_fl_tlsf_insert(chunk, front_block);
+    }
 
-            if (!hole) {
-                /* Can't track the tail: give the padding to the allocation.
-                 * Wasteful, but consistent */
-                alloc->size += back;
-            }
-            else {
-                hole->block = block;
-                hole->offset = aligned + size;
-                hole->size = back;
-                hole->is_free = true;
+    if (back_block) {
+        memset(back_block, 0, sizeof(*back_block));
+        back_block->chunk = chunk;
+        back_block->offset = offset + size;
+        back_block->size = back;
+        back_block->free = true;
 
-                hole->prev = alloc;
-                hole->next = alloc->next;
-                if (alloc->next) { alloc->next->prev = hole; }
-                alloc->next = hole;
-            }
+        back_block->prev_phys = block;
+        back_block->next_phys = block->next_phys;
+
+        if (block->next_phys) {
+            block->next_phys->prev_phys = back_block;
         }
 
-        block->used += alloc->size;
+        block->next_phys = back_block;
 
-        *out = alloc;
-        return true;
+        __lahar_fl_tlsf_insert(chunk, back_block);
     }
 
-    return false;
-}
-
-/* ---------------------------------------------------------- alloc / free */
-
-static uint32_t __lahar_fl_alloc_dedicated(uint32_t mem_type, VkDeviceSize size, bool is_linear, LaharFlAlloc** out) {
-    LaharFlAlloc* node = __lahar_fl_new_node();
-    if (!node) { return LAHAR_ERR_ALLOC_FAILED; }
-
-    VkMemoryAllocateInfo info = ZINIT;
-    info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    info.allocationSize = size;
-    info.memoryTypeIndex = mem_type;
-
-    if ((lahar->vkresult = vkAllocateMemory(lahar->device, &info, lahar->vkalloc, &node->memory)) != VK_SUCCESS) {
-        lahar_free(node);
-        return LAHAR_ERR_VK_ERR;
-    }
-
-    node->size = size;
-    node->mem_type = mem_type;
-    node->is_linear = is_linear;
-
-    /* Link into the dedicated list for leak tracking */
-    node->next = __lahar_fl.dedicated_head;
-    if (__lahar_fl.dedicated_head) { __lahar_fl.dedicated_head->prev = node; }
-    __lahar_fl.dedicated_head = node;
-
-    __lahar_fl.reserved += size;
-    __lahar_fl.dedicated_count++;
-
-    *out = node;
-    return LAHAR_ERR_SUCCESS;
-}
-
-static uint32_t __lahar_fl_alloc_in_type(uint32_t mem_type, const VkMemoryRequirements* reqs, bool is_linear, LaharFlAlloc** out) {
-    uint32_t err = LAHAR_ERR_SUCCESS;
-
-    if (reqs->size >= LAHAR_FL_DEDICATED_THRESHOLD) {
-        return __lahar_fl_alloc_dedicated(mem_type, reqs->size, is_linear, out);
-    }
-
-    LaharFlPool* pool = &__lahar_fl.pools[mem_type];
-
-    for (size_t i = 0; i < pool->count; i++) {
-        if (__lahar_fl_try_place(pool->blocks[i], reqs->size, reqs->alignment, is_linear, out)) {
-            return LAHAR_ERR_SUCCESS;
-        }
-    }
-
-    LaharFlBlock* block = NULL;
-    if ((err = __lahar_fl_block_create(mem_type, LAHAR_FL_BLOCK_SIZE, &block))) {
-        return err;
-    }
-
-    if (!__lahar_fl_try_place(block, reqs->size, reqs->alignment, is_linear, out)) {
-        /* A fresh block refused the request (pathological alignment).
-         * Fall back to a dedicated allocation */
-        __lahar_fl_block_destroy(block);
-        return __lahar_fl_alloc_dedicated(mem_type, reqs->size, is_linear, out);
-    }
+    block->offset = offset;
+    block->size = size;
 
     return LAHAR_ERR_SUCCESS;
 }
 
-/* Find a memory type and allocate, retrying other candidate types if the
- * driver reports out-of-memory on the preferred one */
-static uint32_t __lahar_fl_allocate(const VkMemoryRequirements* reqs, VkMemoryPropertyFlags required, VkMemoryPropertyFlags preferred, bool is_linear, LaharFlAlloc** out) {
-    uint32_t err = LAHAR_ERR_SUCCESS;
-    uint32_t remaining = reqs->memoryTypeBits;
+// Util: Return a no-longer-used block to the free bins, coalescing with physically adjacent free neighbors.
+static void __lahar_fl_block_release(LaharFreelistMemChunk* chunk, LaharFreelistSubAllocation* block) {
+    block->free = true;
 
-    while (remaining) {
-        uint32_t mem_type = 0;
+    if (chunk->dedicated) { return; }
 
-        if ((err = __lahar_fl_find_type(remaining, required, preferred, &mem_type))) {
-            return err;
-        }
+    LaharFreelistSubAllocation* prev = block->prev_phys;
+    LaharFreelistSubAllocation* next = block->next_phys;
 
-        err = __lahar_fl_alloc_in_type(mem_type, reqs, is_linear, out);
+    if (prev && prev->free) {
+        __lahar_fl_tlsf_remove(chunk, prev);
 
-        if (err == LAHAR_ERR_SUCCESS) {
-            __lahar_fl.used += (*out)->size;
-            __lahar_fl.live_allocs++;
-            return LAHAR_ERR_SUCCESS;
-        }
+        prev->size += block->size;
+        prev->next_phys = next;
 
-        const bool vk_oom = err == LAHAR_ERR_VK_ERR &&
-            (lahar->vkresult == VK_ERROR_OUT_OF_DEVICE_MEMORY || lahar->vkresult == VK_ERROR_OUT_OF_HOST_MEMORY);
+        if (next) { next->prev_phys = prev; }
 
-        if (!vk_oom) { return err; }
-
-        remaining &= ~(1u << mem_type);
+        lahar_free(block);
+        block = prev;
     }
 
-    return LAHAR_ERR_ALLOC_FAILED;
-}
+    if (next && next->free) {
+        __lahar_fl_tlsf_remove(chunk, next);
 
-static void __lahar_fl_free_alloc(LaharFlAlloc* node) {
-    __lahar_fl.used -= node->size;
-    __lahar_fl.live_allocs--;
+        block->size += next->size;
+        block->next_phys = next->next_phys;
 
-    if (!node->block) {
-        /* Dedicated */
-        if (node->mapped && vkUnmapMemory) {
-            vkUnmapMemory(lahar->device, node->memory);
-        }
-
-        if (vkFreeMemory) {
-            vkFreeMemory(lahar->device, node->memory, lahar->vkalloc);
-        }
-
-        if (node->prev) { node->prev->next = node->next; }
-        else { __lahar_fl.dedicated_head = node->next; }
-        if (node->next) { node->next->prev = node->prev; }
-
-        __lahar_fl.reserved -= node->size;
-        __lahar_fl.dedicated_count--;
-
-        lahar_free(node);
-        return;
-    }
-
-    LaharFlBlock* block = node->block;
-
-    block->used -= node->size;
-    node->is_free = true;
-    node->tag = NULL;
-
-    /* Coalesce with the next hole */
-    if (node->next && node->next->is_free) {
-        LaharFlAlloc* next = node->next;
-
-        node->size += next->size;
-        node->next = next->next;
-        if (next->next) { next->next->prev = node; }
+        if (next->next_phys) { next->next_phys->prev_phys = block; }
 
         lahar_free(next);
     }
 
-    /* Coalesce into the previous hole */
-    if (node->prev && node->prev->is_free) {
-        LaharFlAlloc* prev = node->prev;
-
-        prev->size += node->size;
-        prev->next = node->next;
-        if (node->next) { node->next->prev = prev; }
-
-        lahar_free(node);
-    }
-
-    if (block->used == 0) {
-        __lahar_fl_block_destroy(block);
-    }
+    __lahar_fl_tlsf_insert(chunk, block);
 }
 
-/* ------------------------------------------------------- vtable functions */
-
-static uint32_t __lahar_fl_alloc_buffer(void* self, Lahar* lahar_, const VkBufferCreateInfo* info, LaharMemoryUsage usage, VkBuffer* buffer, LaharAllocation* allocation) {
-    if (!self || !lahar_) { return LAHAR_ERR_INVALID_STATE; }
-    if (!info || !buffer || !allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
-
+// Util: create a new memchunk
+static uint32_t __lahar_fl_alloc_memchunk(
+    LaharFreelistAllocator* self,
+    VkDeviceSize size,
+    uint32_t type_index,
+    bool dedicated,
+    LaharGranularityClass granularity_class,
+    void* pNext,
+    LaharFreelistMemChunk** chunk_out
+) {
     uint32_t err = LAHAR_ERR_SUCCESS;
-    VkMemoryPropertyFlags required = 0, preferred = 0;
+    VkMemoryAllocateInfo info = ZINIT;
+    LaharFreelistMemChunk* chunk = NULL;
+    LaharFreelistSubAllocation* block = NULL;
+    LaharFreelistChunkVec* vec = NULL;
 
-    if ((err = __lahar_fl_usage_flags(usage, &required, &preferred))) {
-        return err;
+    if (!dedicated) {
+        size = (size + LAHAR_FREELIST_MIN_BLOCK - 1) & ~(LAHAR_FREELIST_MIN_BLOCK - 1);
+
+        // A shared chunk's initial free block is binned, and the bins cannot
+        // index a block at or above 2^29. Anything larger has to be dedicated.
+        LAHAR_ASSERT(size <= LAHAR_FREELIST_MAX_ALLOC);
     }
 
-    VkBuffer buf = VK_NULL_HANDLE;
-    if ((lahar_->vkresult = vkCreateBuffer(lahar_->device, info, lahar_->vkalloc, &buf)) != VK_SUCCESS) {
-        return LAHAR_ERR_VK_ERR;
+    chunk = (LaharFreelistMemChunk*)lahar_malloc(sizeof(*chunk));
+    if (!chunk) {
+        err = LAHAR_ERR_ALLOC_FAILED;
+        goto end;
     }
 
-    VkMemoryRequirements reqs = ZINIT;
-    vkGetBufferMemoryRequirements(lahar_->device, buf, &reqs);
+    memset(chunk, 0, sizeof(*chunk));
 
-    LaharFlAlloc* node = NULL;
-    if ((err = __lahar_fl_allocate(&reqs, required, preferred, true, &node))) {
-        vkDestroyBuffer(lahar_->device, buf, lahar_->vkalloc);
-        return err;
+    info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    info.allocationSize = size;
+    info.memoryTypeIndex = type_index;
+    info.pNext = pNext;
+
+    if ((lahar->vkresult = vkAllocateMemory(lahar->device, &info, lahar->vkalloc, &chunk->handle)) != VK_SUCCESS) {
+        err = LAHAR_ERR_VK_ERR;
+        goto end;
     }
 
-    VkDeviceMemory memory = node->block ? node->block->memory : node->memory;
-
-    if ((lahar_->vkresult = vkBindBufferMemory(lahar_->device, buf, memory, node->offset)) != VK_SUCCESS) {
-        __lahar_fl_free_alloc(node);
-        vkDestroyBuffer(lahar_->device, buf, lahar_->vkalloc);
-        return LAHAR_ERR_VK_ERR;
+    block = (LaharFreelistSubAllocation*)lahar_malloc(sizeof(*block));
+    if (!block) {
+        err = LAHAR_ERR_ALLOC_FAILED;
+        goto end;
     }
 
-    *buffer = buf;
-    *allocation = (LaharAllocation)node;
+    memset(block, 0, sizeof(*block));
+    block->chunk = chunk;
+    block->offset = 0;
+    block->size = size;
+    block->free = true;
 
-    return LAHAR_ERR_SUCCESS;
+    chunk->size = size;
+    chunk->type_index = type_index;
+    chunk->blocks = block;
+    chunk->dedicated = dedicated;
+    chunk->granularity_class = granularity_class;
+
+    if (!dedicated) {
+        __lahar_fl_tlsf_insert(chunk, block);
+    }
+
+    vec = &self->types[type_index];
+
+    if (!(vec->cap && vec->count < vec->cap)) {
+        lahar_vec_expand(vec->chunks, vec->cap) else {
+            err = LAHAR_ERR_ALLOC_FAILED;
+            goto end;
+        }
+    }
+
+    vec->chunks[vec->count++] = chunk;
+    *chunk_out = chunk;
+end:
+    if (err) {
+        if (block) { lahar_free(block); }
+        if (chunk) {
+            if (chunk->handle != VK_NULL_HANDLE) {
+                vkFreeMemory(lahar->device, chunk->handle, lahar->vkalloc);
+            }
+
+            lahar_free(chunk);
+        }
+    }
+
+    return err;
 }
 
-static uint32_t __lahar_fl_free_buffer(void* self, Lahar* lahar_, VkBuffer* buffer, LaharAllocation* allocation) {
-    if (!self || !lahar_) { return LAHAR_ERR_INVALID_STATE; }
-    if (!buffer || !allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+// Util: destroy a mem chunk
+static void __lahar_fl_free_memchunk(LaharFreelistAllocator* self, LaharFreelistMemChunk* chunk) {
+    LAHAR_ASSERT(self && chunk);
 
-    if (*buffer != VK_NULL_HANDLE && vkDestroyBuffer) {
-        vkDestroyBuffer(lahar_->device, *buffer, lahar_->vkalloc);
+    uint32_t index = UINT32_MAX;
+
+    LaharFreelistChunkVec* vec = &self->types[chunk->type_index];
+
+    for (uint32_t i = 0; i < vec->count; i++) {
+        if (vec->chunks[i] == chunk) {
+            index = i;
+            break;
+        }
     }
 
-    if (*allocation) {
-        __lahar_fl_free_alloc((LaharFlAlloc*)*allocation);
+    if (index == UINT32_MAX) { return; }
+
+    if (index != vec->count - 1) {
+        vec->chunks[index] = vec->chunks[vec->count - 1];
     }
 
-    *buffer = VK_NULL_HANDLE;
-    *allocation = NULL;
+    vec->chunks[vec->count - 1] = NULL;
+    vec->count--;
 
-    return LAHAR_ERR_SUCCESS;
+    LaharFreelistSubAllocation* suballoc = chunk->blocks;
+
+    while(suballoc) {
+        LaharFreelistSubAllocation* cur = suballoc;
+        suballoc = suballoc->next_phys;
+        lahar_free(cur);
+    }
+
+    vkFreeMemory(lahar->device, chunk->handle, lahar->vkalloc);
+    lahar_free(chunk);
 }
 
-static uint32_t __lahar_fl_alloc_img(void* self, Lahar* lahar_, const VkImageCreateInfo* info, VkImage* image, LaharAllocation* allocation) {
-    if (!self || !lahar_) { return LAHAR_ERR_INVALID_STATE; }
-    if (!info || !image || !allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+// Util: Inverse of __lahar_fl_suballoc: return a live suballocation to the allocator.
+// Owns the reclaim policy: currently eager, so a chunk whose last resident
+// leaves is freed immediately (dedicated chunks trivially so).
+//
+// This is the *should* be the only decrement of live_count, and __lahar_fl_suballoc
+// the only increment.
+static void __lahar_fl_suballoc_release(
+    LaharFreelistAllocator* self,
+    LaharFreelistSubAllocation* suballoc
+) {
+    LAHAR_ASSERT(self && suballoc);
 
-    uint32_t err = LAHAR_ERR_SUCCESS;
+    LaharFreelistMemChunk* chunk = suballoc->chunk;
 
-    VkImage img = VK_NULL_HANDLE;
-    if ((lahar_->vkresult = vkCreateImage(lahar_->device, info, lahar_->vkalloc, &img)) != VK_SUCCESS) {
-        return LAHAR_ERR_VK_ERR;
-    }
+    LAHAR_ASSERT(chunk && chunk->live_count > 0);
+    LAHAR_ASSERT(!suballoc->free);
 
-    VkMemoryRequirements reqs = ZINIT;
-    vkGetImageMemoryRequirements(lahar_->device, img, &reqs);
+    chunk->live_count--;
 
-    const bool is_linear = info->tiling == VK_IMAGE_TILING_LINEAR;
-
-    LaharFlAlloc* node = NULL;
-    if ((err = __lahar_fl_allocate(&reqs, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, is_linear, &node))) {
-        vkDestroyImage(lahar_->device, img, lahar_->vkalloc);
-        return err;
-    }
-
-    VkDeviceMemory memory = node->block ? node->block->memory : node->memory;
-
-    if ((lahar_->vkresult = vkBindImageMemory(lahar_->device, img, memory, node->offset)) != VK_SUCCESS) {
-        __lahar_fl_free_alloc(node);
-        vkDestroyImage(lahar_->device, img, lahar_->vkalloc);
-        return LAHAR_ERR_VK_ERR;
-    }
-
-    *image = img;
-    *allocation = (LaharAllocation)node;
-
-    return LAHAR_ERR_SUCCESS;
-}
-
-static uint32_t __lahar_fl_free_img(void* self, Lahar* lahar_, VkImage* image, LaharAllocation* allocation) {
-    if (!self || !lahar_) { return LAHAR_ERR_INVALID_STATE; }
-    if (!image || !allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
-
-    if (*image != VK_NULL_HANDLE && vkDestroyImage) {
-        vkDestroyImage(lahar_->device, *image, lahar_->vkalloc);
-    }
-
-    if (*allocation) {
-        __lahar_fl_free_alloc((LaharFlAlloc*)*allocation);
-    }
-
-    *image = VK_NULL_HANDLE;
-    *allocation = NULL;
-
-    return LAHAR_ERR_SUCCESS;
-}
-
-static uint32_t __lahar_fl_map(void* self, Lahar* lahar_, LaharAllocation allocation, void** out) {
-    if (!self || !lahar_) { return LAHAR_ERR_INVALID_STATE; }
-    if (!allocation || !out) { return LAHAR_ERR_ILLEGAL_PARAMS; }
-
-    LaharFlAlloc* node = (LaharFlAlloc*)allocation;
-
-    if (!(__lahar_fl_type_flags(node->mem_type) & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
-        return LAHAR_ERR_INVALID_CONFIGURATION;
-    }
-
-    void* base = NULL;
-
-    if (node->block) {
-        /* Blocks are persistently mapped at creation */
-        base = (uint8_t*)node->block->mapped + node->offset;
+    if (chunk->dedicated || chunk->live_count == 0) {
+        __lahar_fl_free_memchunk(self, chunk);
     }
     else {
-        /* Dedicated allocations map lazily and stay mapped until freed */
-        if (!node->mapped) {
-            if ((lahar_->vkresult = vkMapMemory(lahar_->device, node->memory, 0, VK_WHOLE_SIZE, 0, &node->mapped)) != VK_SUCCESS) {
-                return LAHAR_ERR_VK_ERR;
+        __lahar_fl_block_release(chunk, suballoc);
+    }
+}
+
+// Util: given a type mask, required properties, and preferred properties, pick the best memory type index
+static uint32_t __lahar_fl_select_mem(uint32_t type_mask, uint32_t required_props, uint32_t preferred_props, uint32_t* chosen) {
+    LAHAR_ASSERT(chosen);
+
+    uint32_t index = UINT32_MAX;
+    uint32_t best_score = UINT32_MAX;
+
+    for (uint32_t i = 0; i < lahar->physdev_info.memprops.memoryTypeCount; i++) {
+        if (!(type_mask & (1u << i))) { continue; }
+
+        const VkMemoryType* memtype = &lahar->physdev_info.memprops.memoryTypes[i];
+
+        if ((memtype->propertyFlags & required_props) != required_props) { continue; }
+
+        uint32_t score = 0;
+
+        for (uint32_t j = 0; j < sizeof(preferred_props) * 8; j++) {
+            uint32_t flag = 1u << j;
+
+            if ((flag & preferred_props) && (flag & memtype->propertyFlags)) {
+                score++;
             }
         }
 
-        base = node->mapped;
+        if (best_score == UINT32_MAX || score > best_score) {
+            index = i;
+            best_score = score;
+        }
     }
 
-    /* Non-coherent memory may hold stale data (e.g. a readback the GPU just
-     * wrote); invalidate the allocation's range before handing it out */
-    if (!__lahar_fl_is_coherent(node->mem_type)) {
-        const VkDeviceSize atom = lahar_->physdev_info.properties.limits.nonCoherentAtomSize;
-        const VkDeviceSize mem_size = node->block ? node->block->size : node->size;
+    if (index != UINT32_MAX) {
+        *chosen = index;
+    }
 
-        VkMappedMemoryRange range = ZINIT;
-        range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-        range.memory = node->block ? node->block->memory : node->memory;
-        range.offset = __lahar_fl_align_down(node->offset, atom);
+    return index == UINT32_MAX ? LAHAR_ERR_MEMORY_UNSATISFIABLE : LAHAR_ERR_SUCCESS;
+}
 
-        VkDeviceSize end = __lahar_fl_align_up(node->offset + node->size, atom);
-        if (end > mem_size) { end = mem_size; }
-        range.size = end - range.offset;
+// Util: map an allocation create info to the required/preferred memory flags
+static uint32_t __lahar_fl_resolve_mem_flags(
+    const LaharAllocationCreateInfo* alloc_info,
+    uint32_t* required_out,
+    uint32_t* preferred_out
+) {
+    LAHAR_ASSERT(alloc_info && required_out && preferred_out);
 
-        if ((lahar_->vkresult = vkInvalidateMappedMemoryRanges(lahar_->device, 1, &range)) != VK_SUCCESS) {
+    LaharMemoryUsage chosen_mem_usage = LAHAR_MU_DONT_KNOW;
+
+    uint32_t required_flags = 0;
+    uint32_t preferred_flags = alloc_info->preferred_flags;
+
+    if (alloc_info->usage == LAHAR_MU_DONT_KNOW) {
+        if (alloc_info->required_flags) {
+            required_flags = alloc_info->required_flags;
+        }
+        else {
+            chosen_mem_usage = LAHAR_MU_DEVICE_ONLY;
+        }
+    }
+    else {
+        chosen_mem_usage = alloc_info->usage;
+    }
+
+    if (!required_flags) {
+        LAHAR_ASSERT(chosen_mem_usage != LAHAR_MU_DONT_KNOW);
+
+        switch (chosen_mem_usage) {
+            case LAHAR_MU_DONT_KNOW:
+                /* unreachable */
+                return LAHAR_ERR_INVALID_STATE;
+            case LAHAR_MU_DEVICE_ONLY:
+                preferred_flags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+                break;
+            case LAHAR_MU_STAGING_SEQUENTIAL:
+                required_flags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+                preferred_flags |= VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+                break;
+            case LAHAR_MU_UPLOAD_DIRECT:
+                required_flags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+                preferred_flags |= VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+                preferred_flags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+                break;
+            case LAHAR_MU_READBACK:
+                required_flags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+                preferred_flags |= VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+                preferred_flags |= VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+                break;
+            default:
+                return LAHAR_ERR_ILLEGAL_PARAMS;
+        }
+    }
+
+    *required_out = required_flags;
+    *preferred_out = preferred_flags;
+    return LAHAR_ERR_SUCCESS;
+}
+
+// Util: compute the memory requirements for an image
+static void __lahar_fl_image_mem_reqs(VkImage image, LaharFreelistMemReqs* out) {
+    LAHAR_ASSERT(image != VK_NULL_HANDLE && out);
+
+    #if defined(VK_VERSION_1_1) || (defined(VK_KHR_get_memory_requirements2) && defined(VK_KHR_dedicated_allocation))
+    VkImageMemoryRequirementsInfo2KHR image_requirements2 = ZINIT;
+    image_requirements2.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2_KHR;
+
+    VkMemoryRequirements2KHR requirements2 = ZINIT;
+    requirements2.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2_KHR;
+
+    VkMemoryDedicatedRequirementsKHR dedicated_requirements = ZINIT;
+    dedicated_requirements.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS_KHR;
+
+    requirements2.pNext = (void*)&dedicated_requirements;
+    #endif
+
+    VkMemoryRequirements requirements = ZINIT;
+
+    #if defined(VK_VERSION_1_1)
+    if (VK_API_VERSION_MINOR(lahar->vkversion) >= 1 && vkGetImageMemoryRequirements2 != NULL) {
+        image_requirements2.image = image;
+
+        vkGetImageMemoryRequirements2(
+            lahar->device,
+            &image_requirements2,
+            &requirements2
+        );
+
+        out->size = requirements2.memoryRequirements.size;
+        out->alignment = requirements2.memoryRequirements.alignment;
+        out->requires_dedicated = dedicated_requirements.requiresDedicatedAllocation;
+        out->prefers_dedicated = dedicated_requirements.prefersDedicatedAllocation;
+        out->type_mask = requirements2.memoryRequirements.memoryTypeBits;
+
+        goto end;
+    }
+    #endif
+
+    #if defined(VK_KHR_get_memory_requirements2) && defined(VK_KHR_dedicated_allocation)
+    if (
+        lahar_extension_has_device(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME) &&
+        lahar_extension_has_device(VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME) &&
+        vkGetImageMemoryRequirements2KHR != NULL
+    ) {
+        image_requirements2.image = image;
+
+        vkGetImageMemoryRequirements2KHR(
+            lahar->device,
+            &image_requirements2,
+            &requirements2
+        );
+
+        out->size = requirements2.memoryRequirements.size;
+        out->alignment = requirements2.memoryRequirements.alignment;
+        out->requires_dedicated = dedicated_requirements.requiresDedicatedAllocation;
+        out->prefers_dedicated = dedicated_requirements.prefersDedicatedAllocation;
+        out->type_mask = requirements2.memoryRequirements.memoryTypeBits;
+
+        goto end;
+    }
+    #endif
+
+    vkGetImageMemoryRequirements(
+        lahar->device,
+        image,
+        &requirements
+    );
+
+    memset(out, 0, sizeof(*out));
+
+    out->size = requirements.size;
+    out->alignment = requirements.alignment;
+    out->type_mask = requirements.memoryTypeBits;
+
+end:
+    if (out->alignment == 0) { out->alignment = 1; } // paranoia, spec says power of two
+
+    // Search size, padded for alignment. Block offsets are always quantum
+    // multiples, so the worst-case padding to align within any free block is
+    // (alignment - quantum). Baking that into the searched size means any
+    // block the bins hand back is guaranteed to fit after the offset nudge,
+    // keeping the search a pure bitmap walk with no fit-retry loop.
+    out->padded_size = __lahar_fl_round_up(out->size);
+
+    if (out->alignment > LAHAR_FREELIST_MIN_BLOCK) {
+        out->padded_size += out->alignment - LAHAR_FREELIST_MIN_BLOCK;
+    }
+
+    // Note: MAX_ALLOC, not MAX_BLOCK. The last bin covers sizes with msb 28,
+    // and map_up's round-up can carry a size just below 2^29 into msb 29,
+    // which would index fl == FL_COUNT and trip the map_down assert.
+    if (out->padded_size > LAHAR_FREELIST_MAX_ALLOC) {
+        out->requires_dedicated = true;
+    }
+}
+
+// Util: compute the memory requirements for a buffer
+static void __lahar_fl_buffer_mem_reqs(VkBuffer buffer, LaharFreelistMemReqs* out) {
+    LAHAR_ASSERT(buffer != VK_NULL_HANDLE && out);
+
+    #if defined(VK_VERSION_1_1) || (defined(VK_KHR_get_memory_requirements2) && defined(VK_KHR_dedicated_allocation))
+    VkBufferMemoryRequirementsInfo2KHR buffer_requirements2 = ZINIT;
+    buffer_requirements2.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2_KHR;
+
+    VkMemoryRequirements2KHR requirements2 = ZINIT;
+    requirements2.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2_KHR;
+
+    VkMemoryDedicatedRequirementsKHR dedicated_requirements = ZINIT;
+    dedicated_requirements.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS_KHR;
+
+    requirements2.pNext = (void*)&dedicated_requirements;
+    #endif
+
+    VkMemoryRequirements requirements = ZINIT;
+
+    #if defined(VK_VERSION_1_1)
+    if (VK_API_VERSION_MINOR(lahar->vkversion) >= 1 && vkGetBufferMemoryRequirements2 != NULL) {
+        buffer_requirements2.buffer = buffer;
+
+        vkGetBufferMemoryRequirements2(
+            lahar->device,
+            &buffer_requirements2,
+            &requirements2
+        );
+
+        out->size = requirements2.memoryRequirements.size;
+        out->alignment = requirements2.memoryRequirements.alignment;
+        out->requires_dedicated = dedicated_requirements.requiresDedicatedAllocation;
+        out->prefers_dedicated = dedicated_requirements.prefersDedicatedAllocation;
+        out->type_mask = requirements2.memoryRequirements.memoryTypeBits;
+
+        goto end;
+    }
+    #endif
+
+    #if defined(VK_KHR_get_memory_requirements2) && defined(VK_KHR_dedicated_allocation)
+    if (
+        lahar_extension_has_device(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME) &&
+        lahar_extension_has_device(VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME) &&
+        vkGetBufferMemoryRequirements2KHR != NULL
+    ) {
+        buffer_requirements2.buffer = buffer;
+
+        vkGetBufferMemoryRequirements2KHR(
+            lahar->device,
+            &buffer_requirements2,
+            &requirements2
+        );
+
+        out->size = requirements2.memoryRequirements.size;
+        out->alignment = requirements2.memoryRequirements.alignment;
+        out->requires_dedicated = dedicated_requirements.requiresDedicatedAllocation;
+        out->prefers_dedicated = dedicated_requirements.prefersDedicatedAllocation;
+        out->type_mask = requirements2.memoryRequirements.memoryTypeBits;
+
+        goto end;
+    }
+    #endif
+
+    vkGetBufferMemoryRequirements(
+        lahar->device,
+        buffer,
+        &requirements
+    );
+
+    memset(out, 0, sizeof(*out));
+
+    out->size = requirements.size;
+    out->alignment = requirements.alignment;
+    out->type_mask = requirements.memoryTypeBits;
+
+end:
+    if (out->alignment == 0) { out->alignment = 1; } // paranoia, spec says power of two
+
+    // See __lahar_fl_image_mem_reqs for the reasoning on both of these.
+    out->padded_size = __lahar_fl_round_up(out->size);
+
+    if (out->alignment > LAHAR_FREELIST_MIN_BLOCK) {
+        out->padded_size += out->alignment - LAHAR_FREELIST_MIN_BLOCK;
+    }
+
+    if (out->padded_size > LAHAR_FREELIST_MAX_ALLOC) {
+        out->requires_dedicated = true;
+    }
+}
+
+
+// Util: how big a fresh chunk should be for a request that missed every
+// existing chunk. Owns the whole size policy:
+//
+//   - dedicated chunks are exactly the request (the dedicated allocation
+//     contract is 1:1 memory-to-resource, so there is nothing to decide)
+//   - shared chunks start from a preferred size that is heap-relative on small
+//     heaps, so an integrated part or a BAR heap never hands out a quarter of
+//     itself for one small resource
+//   - that preferred size is then ramped: while this type/class has no chunk
+//     bigger than half the preferred size, open 1/8, then 1/4, then 1/2. A
+//     process that allocates two small resources pays two small chunks, while
+//     one that keeps allocating converges on full-size chunks and so stays well
+//     clear of maxMemoryAllocationCount.
+//   - a request larger than the preferred size just opens a chunk that fits it
+//
+// The result is always clamped to MAX_ALLOC: a chunk's initial free block gets
+// binned, and the bins cannot index a block at or above 2^29.
+static VkDeviceSize __lahar_fl_chunk_size(
+    LaharFreelistAllocator* self,
+    uint32_t type_index,
+    const LaharFreelistMemReqs* reqs,
+    LaharGranularityClass granularity_class,
+    bool dedicated
+) {
+    LAHAR_ASSERT(self && reqs);
+
+    if (dedicated) {
+        return reqs->size;
+    }
+
+    // Carving at offset 0 satisfies any alignment, so the fresh-chunk floor is
+    // the unpadded request.
+    const VkDeviceSize needed = __lahar_fl_round_up(reqs->size);
+
+    LAHAR_ASSERT(needed <= LAHAR_FREELIST_MAX_ALLOC); // else reqs should be dedicated
+
+    const uint32_t heap_index = lahar->physdev_info.memprops.memoryTypes[type_index].heapIndex;
+    const VkDeviceSize heap_size = lahar->physdev_info.memprops.memoryHeaps[heap_index].size;
+
+    VkDeviceSize preferred = heap_size <= LAHAR_FREELIST_SMALL_HEAP_SIZE ?
+        heap_size / LAHAR_FREELIST_SMALL_HEAP_DIVISOR :
+        LAHAR_FREELIST_PREFERRED_CHUNK_SIZE;
+
+    if (preferred > LAHAR_FREELIST_MAX_ALLOC) {
+        preferred = LAHAR_FREELIST_MAX_ALLOC;
+    }
+
+    // Largest shared chunk this type already holds in the classes that can
+    // serve this request; the ramp only steps down past sizes we've outgrown.
+    VkDeviceSize max_existing = 0;
+    LaharFreelistChunkVec* vec = &self->types[type_index];
+
+    for (uint32_t i = 0; i < vec->count; i++) {
+        LaharFreelistMemChunk* chunk = vec->chunks[i];
+
+        if (chunk->dedicated) { continue; }
+
+        if (__lahar_fl_must_segregate() && chunk->granularity_class != granularity_class) {
+            continue;
+        }
+
+        if (chunk->size > max_existing) { max_existing = chunk->size; }
+    }
+
+    for (uint32_t i = 0; i < LAHAR_FREELIST_CHUNK_SHIFT_MAX; i++) {
+        const VkDeviceSize smaller = preferred / 2;
+
+        // Stop as soon as halving would undercut a chunk we already hold, or
+        // leave the request without comfortable room to share the chunk.
+        if (smaller > max_existing && smaller >= needed * 2) {
+            preferred = smaller;
+        }
+        else {
+            break;
+        }
+    }
+
+    return needed > preferred ? needed : preferred;
+}
+
+// Util: suballocate from the allocator, carving existing chunks, or making a new one
+static uint32_t __lahar_fl_suballoc(
+    LaharFreelistAllocator* self,
+    uint32_t type_index,
+    const LaharFreelistMemReqs* reqs,
+    LaharGranularityClass granularity_class,
+    void* pNext,
+    LaharFreelistSubAllocation** out
+) {
+    LAHAR_ASSERT(self && reqs && out);
+
+    uint32_t err = LAHAR_ERR_SUCCESS;
+    LaharFreelistMemChunk* chunk = NULL;
+    LaharFreelistSubAllocation* chosen_suballoc = NULL;
+
+
+    if (!reqs->prefers_dedicated && !reqs->requires_dedicated) {
+        LaharFreelistChunkVec* vec = &self->types[type_index];
+
+        uint32_t fl, sl;
+        __lahar_fl_map_up(reqs->padded_size, &fl, &sl);
+
+        for (uint32_t i = 0; i < vec->count; i++) {
+            // chunks are segregated by granularity class: linear and
+            // non-linear resources never share a chunk, which satisfies
+            // bufferImageGranularity without any per-block page math
+            // but only if the device requires it
+            if (__lahar_fl_must_segregate() && vec->chunks[i]->granularity_class != granularity_class) {
+                continue;
+            }
+
+            LaharFreelistSubAllocation* found = __lahar_fl_tlsf_search(vec->chunks[i], fl, sl);
+
+            if (found) {
+                chunk = vec->chunks[i];
+                chosen_suballoc = found;
+                break;
+            }
+        }
+
+        if (chosen_suballoc) {
+            // padding the searched size means this can't run off the end of the block
+            const VkDeviceSize aligned_offset = (chosen_suballoc->offset + reqs->alignment - 1) & ~(reqs->alignment - 1);
+
+            __lahar_fl_tlsf_remove(chunk, chosen_suballoc);
+
+            err = __lahar_fl_block_split(chunk, chosen_suballoc, aligned_offset, __lahar_fl_round_up(reqs->size));
+
+            if (err) {
+                // host OOM carving the remainders; put the block back untouched
+                __lahar_fl_tlsf_insert(chunk, chosen_suballoc);
+                chosen_suballoc = NULL;
+                goto end;
+            }
+        }
+    }
+
+    if (!chosen_suballoc) {
+        const bool dedicated = reqs->prefers_dedicated || reqs->requires_dedicated;
+
+        // The size the request actually needs out of a fresh chunk. Carving
+        // at offset 0 satisfies any alignment, so no padding is needed here.
+        const VkDeviceSize needed = __lahar_fl_round_up(reqs->size);
+
+        VkDeviceSize chunk_size = __lahar_fl_chunk_size(self, type_index, reqs, granularity_class, dedicated);
+
+        err = __lahar_fl_alloc_memchunk(
+            self,
+            chunk_size,
+            type_index,
+            dedicated,
+            granularity_class,
+            pNext,
+            &chunk
+        );
+
+        // A chunk failing device OOM doesn't mean the request can't fit in this
+        // memory type; walk the size back down toward what it actually needs
+        // before the caller writes the whole type off. Dedicated chunks have no
+        // slack to give up, so they fail outright.
+        for (uint32_t i = 0; !dedicated && i < LAHAR_FREELIST_CHUNK_SHIFT_MAX; i++) {
+            if (err != LAHAR_ERR_VK_ERR || lahar->vkresult != VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+                break;
+            }
+
+            if (chunk_size <= needed) { break; }
+
+            const VkDeviceSize smaller = chunk_size / 2;
+            chunk_size = smaller > needed ? smaller : needed;
+
+            err = __lahar_fl_alloc_memchunk(self, chunk_size, type_index, dedicated, granularity_class, pNext, &chunk);
+        }
+
+        if (err) {
+            goto end;
+        }
+
+        chosen_suballoc = chunk->blocks;
+
+        // no-op for dedicated chunks (nothing is binned)
+        __lahar_fl_tlsf_remove(chunk, chosen_suballoc);
+
+        if (!dedicated) {
+            // carve the request out of the fresh chunk; the block starts at
+            // offset 0, which satisfies any alignment
+            err = __lahar_fl_block_split(chunk, chosen_suballoc, 0, __lahar_fl_round_up(reqs->size));
+
+            if (err) {
+                // host OOM carving the remainder; eagerly drop the chunk we
+                // just opened rather than binning an untouched empty chunk
+                __lahar_fl_free_memchunk(self, chunk);
+                chosen_suballoc = NULL;
+                goto end;
+            }
+        }
+    }
+
+    chosen_suballoc->free = false;
+    chosen_suballoc->chunk->live_count++;
+
+end:
+    *out = chosen_suballoc;
+
+    return err;
+}
+
+// Method
+static uint32_t __lahar_fl_alloc_image(
+    void* s,
+    const VkImageCreateInfo* info,
+    const LaharAllocationCreateInfo* alloc_info,
+    VkImage* img_out,
+    LaharAllocation* alloc_out
+) {
+    if ( !s ||
+        !info ||
+        !alloc_info ||
+        !img_out ||
+        !alloc_out
+    ) {
+        return LAHAR_ERR_ILLEGAL_PARAMS;
+    }
+
+    LaharFreelistAllocator* self = (LaharFreelistAllocator*)s;
+
+    VkImage image = VK_NULL_HANDLE;
+    uint32_t err = LAHAR_ERR_SUCCESS;
+
+
+    #if defined(VK_VERSION_1_1) || (defined(VK_KHR_get_memory_requirements2) && defined(VK_KHR_dedicated_allocation))
+    VkMemoryDedicatedAllocateInfoKHR dedicated_info = ZINIT;
+    dedicated_info.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO_KHR;
+    #endif
+
+    void* create_pnext = NULL;
+    LaharFreelistMemReqs img_reqs = ZINIT;
+
+    uint32_t type_index = 0;
+    uint32_t required_flags = 0;
+    uint32_t preferred_flags = 0;
+    uint32_t type_mask = 0;
+    LaharGranularityClass granularity_class =
+        info->tiling == VK_IMAGE_TILING_LINEAR ?
+            LAHAR_GC_LINEAR :
+            LAHAR_GC_NONLINEAR;
+
+    LaharFreelistSubAllocation* chosen_suballoc = NULL;
+
+    if ((err = __lahar_fl_resolve_mem_flags(alloc_info, &required_flags, &preferred_flags))) {
+        goto end;
+    }
+
+    if ((lahar->vkresult = vkCreateImage(lahar->device, info, lahar->vkalloc, &image)) != VK_SUCCESS) {
+        err = LAHAR_ERR_VK_ERR;
+        goto end;
+    }
+
+    __lahar_fl_image_mem_reqs(image, &img_reqs);
+
+
+    #if defined(VK_VERSION_1_1) || (defined(VK_KHR_get_memory_requirements2) && defined(VK_KHR_dedicated_allocation))
+    if (img_reqs.requires_dedicated || img_reqs.prefers_dedicated) {
+        dedicated_info.image = image;
+        create_pnext = (void*)&dedicated_info;
+    }
+    #endif
+
+    type_mask = img_reqs.type_mask;
+
+    // Retry every memory type until we can allocate something or run out of types
+    do {
+        if ((err = __lahar_fl_select_mem(type_mask, required_flags, preferred_flags, &type_index))) {
+            goto end;
+        }
+
+        if (!(err = __lahar_fl_suballoc(self, type_index, &img_reqs, granularity_class, create_pnext, &chosen_suballoc))) {
+            break; // got one
+        }
+
+        if (err != LAHAR_ERR_VK_ERR || lahar->vkresult != VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+            goto end;
+        }
+
+        type_mask &= ~(1u << type_index);
+    } while (type_mask);
+
+    if (!chosen_suballoc) { goto end; } // mask exhausted, err still holds the OOM
+
+    if ((lahar->vkresult = vkBindImageMemory(lahar->device, image, chosen_suballoc->chunk->handle, chosen_suballoc->offset))) {
+        err = LAHAR_ERR_VK_ERR;
+        goto end;
+    }
+
+end:
+    if (err) {
+        if (image) {
+            vkDestroyImage(lahar->device, image, lahar->vkalloc);
+        }
+
+        if (chosen_suballoc) {
+            // bind failed after suballocating; hand the block back. Eager
+            // reclaim inside release also covers the fresh-chunk case.
+            __lahar_fl_suballoc_release(self, chosen_suballoc);
+        }
+    }
+    else {
+        *img_out = image;
+        *alloc_out = (LaharAllocation)(void*)chosen_suballoc;
+    }
+
+    #ifdef LAHAR_DEBUG
+    __lahar_fl_validate(self);
+    #endif
+
+    return err;
+}
+
+// Method
+static uint32_t __lahar_fl_free_image(
+    void* s,
+    VkImage image,
+    LaharAllocation allocation
+) {
+    if (!s || !image || !allocation) {
+        return LAHAR_ERR_ILLEGAL_PARAMS;
+    }
+
+    LaharFreelistAllocator* self = (LaharFreelistAllocator*)s;
+    LaharFreelistSubAllocation* suballoc = (LaharFreelistSubAllocation*)allocation;
+
+    vkDestroyImage(lahar->device, image, lahar->vkalloc);
+    __lahar_fl_suballoc_release(self, suballoc);
+
+    #ifdef LAHAR_DEBUG
+    __lahar_fl_validate(self);
+    #endif
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+// Method
+static uint32_t __lahar_fl_alloc_buffer(
+    void* s,
+    const VkBufferCreateInfo* info,
+    const LaharAllocationCreateInfo* alloc_info,
+    VkBuffer* buffer_out,
+    LaharAllocation* alloc_out
+) {
+    if (!s || !info || !alloc_info || !buffer_out || !alloc_out) {
+        return LAHAR_ERR_ILLEGAL_PARAMS;
+    }
+
+    uint32_t err = LAHAR_ERR_SUCCESS;
+
+    LaharFreelistAllocator* self = (LaharFreelistAllocator*)s;
+    // buffers are always linear resources
+    const LaharGranularityClass granularity_class = LAHAR_GC_LINEAR;
+    LaharFreelistMemReqs buf_reqs = ZINIT;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    uint32_t required_flags = 0;
+    uint32_t preferred_flags = 0;
+    uint32_t type_mask = 0;
+    uint32_t type_index = 0;
+
+    #if defined(VK_VERSION_1_1) || (defined(VK_KHR_get_memory_requirements2) && defined(VK_KHR_dedicated_allocation))
+    VkMemoryDedicatedAllocateInfoKHR dedicated_info = ZINIT;
+    dedicated_info.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO_KHR;
+    #endif
+
+    void* create_pnext = NULL;
+    LaharFreelistSubAllocation* chosen_suballoc = NULL;
+
+    // TODO: if buffer device address support is ever added, chunks backing
+    // such buffers need VkMemoryAllocateFlagsInfo with the DEVICE_ADDRESS bit
+
+    if ((err = __lahar_fl_resolve_mem_flags(alloc_info, &required_flags, &preferred_flags))) {
+        goto end;
+    }
+
+    if ((lahar->vkresult = vkCreateBuffer(lahar->device, info, lahar->vkalloc, &buffer)) != VK_SUCCESS) {
+        err = LAHAR_ERR_VK_ERR;
+        goto end;
+    }
+
+    __lahar_fl_buffer_mem_reqs(buffer, &buf_reqs);
+
+    #if defined(VK_VERSION_1_1) || (defined(VK_KHR_get_memory_requirements2) && defined(VK_KHR_dedicated_allocation))
+    if (buf_reqs.requires_dedicated || buf_reqs.prefers_dedicated) {
+        dedicated_info.buffer = buffer;
+        create_pnext = (void*)&dedicated_info;
+    }
+    #endif
+
+    type_mask = buf_reqs.type_mask;
+
+    // Retry every memory type until we can allocate something or run out of types
+    do {
+        if ((err = __lahar_fl_select_mem(type_mask, required_flags, preferred_flags, &type_index))) {
+            goto end;
+        }
+
+        if (!(err = __lahar_fl_suballoc(self, type_index, &buf_reqs, granularity_class, create_pnext, &chosen_suballoc))) {
+            break; // got one
+        }
+
+        if (err != LAHAR_ERR_VK_ERR || lahar->vkresult != VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+            goto end;
+        }
+
+        type_mask &= ~(1u << type_index);
+    } while (type_mask);
+
+    if (!chosen_suballoc) { goto end; } // mask exhausted, err still holds the OOM
+
+    if ((lahar->vkresult = vkBindBufferMemory(lahar->device, buffer, chosen_suballoc->chunk->handle, chosen_suballoc->offset))) {
+        err = LAHAR_ERR_VK_ERR;
+        goto end;
+    }
+
+end:
+    if (err) {
+        if (buffer) {
+            vkDestroyBuffer(lahar->device, buffer, lahar->vkalloc);
+        }
+
+        if (chosen_suballoc) {
+            // bind failed after suballocating; hand the block back. Eager
+            // reclaim inside release also covers the fresh-chunk case.
+            __lahar_fl_suballoc_release(self, chosen_suballoc);
+        }
+    }
+    else {
+        *buffer_out = buffer;
+        *alloc_out = (LaharAllocation)(void*)chosen_suballoc;
+    }
+
+    #ifdef LAHAR_DEBUG
+    __lahar_fl_validate(self);
+    #endif
+
+    return err;
+}
+
+// Method
+static uint32_t __lahar_fl_free_buffer(
+    void* s,
+    VkBuffer buffer,
+    LaharAllocation allocation
+) {
+    if (!s || !buffer || !allocation) {
+        return LAHAR_ERR_ILLEGAL_PARAMS;
+    }
+
+    LaharFreelistAllocator* self = (LaharFreelistAllocator*)s;
+    LaharFreelistSubAllocation* suballoc = (LaharFreelistSubAllocation*)allocation;
+
+    vkDestroyBuffer(lahar->device, buffer, lahar->vkalloc);
+    __lahar_fl_suballoc_release(self, suballoc);
+
+    #ifdef LAHAR_DEBUG
+    __lahar_fl_validate(self);
+    #endif
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+// Method
+static uint32_t __lahar_fl_map(
+    void* s,
+    LaharAllocation allocation,
+    void** out
+) {
+    if (!s || !allocation || !out) {
+        return LAHAR_ERR_ILLEGAL_PARAMS;
+    }
+
+    LaharFreelistSubAllocation* suballoc = (LaharFreelistSubAllocation*)allocation;
+    LaharFreelistMemChunk* chunk = suballoc->chunk;
+
+    LAHAR_ASSERT(chunk && !suballoc->free);
+
+    if (!chunk->mapped) {
+        LAHAR_ASSERT(chunk->map_count == 0);
+
+        if ((lahar->vkresult = vkMapMemory(lahar->device, chunk->handle, 0, VK_WHOLE_SIZE, 0, &chunk->mapped)) != VK_SUCCESS) {
+            chunk->mapped = NULL; // driver contract, but don't trust it on failure
             return LAHAR_ERR_VK_ERR;
         }
     }
 
-    *out = base;
+    chunk->map_count++;
+    *out = (uint8_t*)chunk->mapped + suballoc->offset;
+
     return LAHAR_ERR_SUCCESS;
 }
 
-static uint32_t __lahar_fl_unmap(void* self, Lahar* lahar_, LaharAllocation allocation) {
-    if (!self || !lahar_) { return LAHAR_ERR_INVALID_STATE; }
-    if (!allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
-
-    /* Mappings are persistent; nothing to do */
-    return LAHAR_ERR_SUCCESS;
-}
-
-static uint32_t __lahar_fl_flush(void* self, Lahar* lahar_, LaharAllocation allocation, uint64_t off, uint64_t size) {
-    if (!self || !lahar_) { return LAHAR_ERR_INVALID_STATE; }
-    if (!allocation) { return LAHAR_ERR_ILLEGAL_PARAMS; }
-
-    LaharFlAlloc* node = (LaharFlAlloc*)allocation;
-
-    if (off > node->size) { return LAHAR_ERR_ILLEGAL_PARAMS; }
-    if (size != VK_WHOLE_SIZE && off + size > node->size) { return LAHAR_ERR_ILLEGAL_PARAMS; }
-
-    /* Coherent memory doesn't need flushing */
-    if (__lahar_fl_is_coherent(node->mem_type)) {
-        return LAHAR_ERR_SUCCESS;
+// Method
+static uint32_t __lahar_fl_unmap(
+    void* s,
+    LaharAllocation allocation
+) {
+    if (!s || !allocation) {
+        return LAHAR_ERR_ILLEGAL_PARAMS;
     }
 
-    const VkDeviceSize atom = lahar_->physdev_info.properties.limits.nonCoherentAtomSize;
-    const VkDeviceSize mem_size = node->block ? node->block->size : node->size;
+    LaharFreelistSubAllocation* suballoc = (LaharFreelistSubAllocation*)allocation;
+    LaharFreelistMemChunk* chunk = suballoc->chunk;
 
-    const VkDeviceSize start = node->offset + off;
-    const VkDeviceSize end = size == VK_WHOLE_SIZE ? node->offset + node->size : start + size;
+    LAHAR_ASSERT(chunk);
 
-    VkMappedMemoryRange range = ZINIT;
-    range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-    range.memory = node->block ? node->block->memory : node->memory;
-    range.offset = __lahar_fl_align_down(start, atom);
+    if (chunk->map_count == 0 || !chunk->mapped) {
+        return LAHAR_ERR_ILLEGAL_PARAMS; // unmap without a live map
+    }
 
-    VkDeviceSize rend = __lahar_fl_align_up(end, atom);
-    if (rend > mem_size) { rend = mem_size; }
-    range.size = rend - range.offset;
+    if (--chunk->map_count == 0) {
+        vkUnmapMemory(lahar->device, chunk->handle);
+        chunk->mapped = NULL;
+    }
 
-    if ((lahar_->vkresult = vkFlushMappedMemoryRanges(lahar_->device, 1, &range)) != VK_SUCCESS) {
+    return LAHAR_ERR_SUCCESS;
+}
+
+// Util: translate a block-relative range to a chunk-relative VkMappedMemoryRange,
+// clamped to the block and aligned to nonCoherentAtomSize as the spec requires
+static uint32_t __lahar_fl_mapped_range(
+    const LaharFreelistSubAllocation* suballoc,
+    uint64_t off,
+    uint64_t size,
+    VkMappedMemoryRange* out
+) {
+    const LaharFreelistMemChunk* chunk = suballoc->chunk;
+
+    if (off > suballoc->size) {
+        return LAHAR_ERR_ILLEGAL_PARAMS;
+    }
+
+    if (size == VK_WHOLE_SIZE) {
+        size = suballoc->size - off;
+    }
+
+    if (size > suballoc->size - off) {
+        return LAHAR_ERR_ILLEGAL_PARAMS;
+    }
+
+    const VkDeviceSize atom = lahar->physdev_info.properties.limits.nonCoherentAtomSize;
+
+    VkDeviceSize begin = suballoc->offset + off;
+    VkDeviceSize end = begin + size;
+
+    // round begin down and end up to atom boundaries; clamp end to the chunk
+    // (block offsets/sizes are quantum-aligned, not atom-aligned)
+    begin -= begin % atom;
+    end += (atom - (end % atom)) % atom;
+    if (end > chunk->size) { end = chunk->size; }
+
+    memset(out, 0, sizeof(*out));
+    out->sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    out->memory = chunk->handle;
+    out->offset = begin;
+    out->size = end - begin;
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+// Method
+static uint32_t __lahar_fl_flush(
+    void* s,
+    LaharAllocation allocation,
+    uint64_t off,
+    uint64_t size
+) {
+    if (!s || !allocation) {
+        return LAHAR_ERR_ILLEGAL_PARAMS;
+    }
+
+    LaharFreelistSubAllocation* suballoc = (LaharFreelistSubAllocation*)allocation;
+    uint32_t err;
+    VkMappedMemoryRange range;
+
+    if ((err = __lahar_fl_mapped_range(suballoc, off, size, &range))) {
+        return err;
+    }
+
+    if ((lahar->vkresult = vkFlushMappedMemoryRanges(lahar->device, 1, &range)) != VK_SUCCESS) {
         return LAHAR_ERR_VK_ERR;
     }
 
     return LAHAR_ERR_SUCCESS;
 }
 
-static LaharAllocator __lahar_freelist_adapter = {
-    .alloc_image = __lahar_fl_alloc_img,
-    .free_image = __lahar_fl_free_img,
-    .alloc_buffer = __lahar_fl_alloc_buffer,
-    .free_buffer = __lahar_fl_free_buffer,
-    .map = __lahar_fl_map,
-    .unmap = __lahar_fl_unmap,
-    .flush = __lahar_fl_flush
-};
+// Method
+static uint32_t __lahar_fl_invalidate(
+    void* s,
+    LaharAllocation allocation,
+    uint64_t off,
+    uint64_t size
+) {
+    if (!s || !allocation) {
+        return LAHAR_ERR_ILLEGAL_PARAMS;
+    }
 
-LaharAllocator* lahar_allocator_freelist(void) {
-    return &__lahar_freelist_adapter;
-}
+    LaharFreelistSubAllocation* suballoc = (LaharFreelistSubAllocation*)allocation;
+    uint32_t err;
+    VkMappedMemoryRange range;
 
-uint32_t __lahar_init_freelist_alloc(void) {
-    if (!lahar->gpu_allocator) {
-        lahar->gpu_allocator = &__lahar_freelist_adapter;
+    if ((err = __lahar_fl_mapped_range(suballoc, off, size, &range))) {
+        return err;
+    }
+
+    if ((lahar->vkresult = vkInvalidateMappedMemoryRanges(lahar->device, 1, &range)) != VK_SUCCESS) {
+        return LAHAR_ERR_VK_ERR;
     }
 
     return LAHAR_ERR_SUCCESS;
 }
 
-void lahar_freelist_deinit(void) {
-    uint64_t leaks = 0;
-    uint64_t leaked_bytes = 0;
-
-    for (uint32_t t = 0; t < VK_MAX_MEMORY_TYPES; t++) {
-        LaharFlPool* pool = &__lahar_fl.pools[t];
-
-        while (pool->count) {
-            LaharFlBlock* block = pool->blocks[0];
-
-            for (LaharFlAlloc* node = block->head; node; node = node->next) {
-                if (node->is_free) { continue; }
-
-                lahar_warn(
-                    "Leaked GPU allocation: %llu bytes, memory type %u, offset %llu, name: %s",
-                    (unsigned long long)node->size, t,
-                    (unsigned long long)node->offset,
-                    node->tag ? node->tag : "(unnamed)"
-                );
-
-                leaks++;
-                leaked_bytes += node->size;
-            }
-
-            /* Destroy unconditionally: a leak shouldn't also leak the block */
-            __lahar_fl_block_destroy(block);
-        }
-
-        lahar_free(pool->blocks);
-        memset(pool, 0, sizeof(*pool));
+LaharAllocator* lahar_allocator_freelist_init(void) {
+    LaharFreelistAllocator* allocator = (LaharFreelistAllocator*)lahar_malloc(sizeof(*allocator));
+    if (!allocator) {
+        lahar_error("OOM");
+        return NULL;
     }
 
-    LaharFlAlloc* node = __lahar_fl.dedicated_head;
-    while (node) {
-        LaharFlAlloc* next = node->next;
+    memset(allocator, 0, sizeof(*allocator));
 
-        lahar_warn(
-            "Leaked dedicated GPU allocation: %llu bytes, memory type %u, name: %s",
-            (unsigned long long)node->size, node->mem_type,
-            node->tag ? node->tag : "(unnamed)"
-        );
+    allocator->vtable.alloc_image = &__lahar_fl_alloc_image;
+    allocator->vtable.free_image = &__lahar_fl_free_image;
+    allocator->vtable.alloc_buffer = &__lahar_fl_alloc_buffer;
+    allocator->vtable.free_buffer = &__lahar_fl_free_buffer;
+    allocator->vtable.map = &__lahar_fl_map;
+    allocator->vtable.unmap = &__lahar_fl_unmap;
+    allocator->vtable.flush = &__lahar_fl_flush;
+    allocator->vtable.invalidate = &__lahar_fl_invalidate;
 
-        leaks++;
-        leaked_bytes += node->size;
-
-        if (node->mapped && vkUnmapMemory) {
-            vkUnmapMemory(lahar->device, node->memory);
-        }
-
-        if (vkFreeMemory) {
-            vkFreeMemory(lahar->device, node->memory, lahar->vkalloc);
-        }
-
-        lahar_free(node);
-        node = next;
-    }
-
-    if (leaks) {
-        lahar_warn(
-            "GPU allocator: %llu leaked allocation(s) totaling %llu bytes",
-            (unsigned long long)leaks, (unsigned long long)leaked_bytes
-        );
-    }
-
-    if (lahar->gpu_allocator == &__lahar_freelist_adapter) {
-        lahar->gpu_allocator = NULL;
-    }
-
-    memset(&__lahar_fl, 0, sizeof(__lahar_fl));
+    allocator->magic = LAHAR_FREELIST_MAGIC;
+    return (LaharAllocator*)allocator;
 }
 
-uint32_t lahar_freelist_stats(LaharFreelistStats* out) {
-    if (!out) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+void lahar_allocator_freelist_deinit(LaharAllocator* allocator) {
+    if (!allocator) { return; }
 
-    out->reserved = __lahar_fl.reserved;
-    out->used = __lahar_fl.used;
-    out->live_allocations = __lahar_fl.live_allocs;
-    out->block_count = __lahar_fl.block_count;
-    out->dedicated_count = __lahar_fl.dedicated_count;
+    LaharFreelistAllocator* cast = (LaharFreelistAllocator*)allocator;
+    if (cast->magic != LAHAR_FREELIST_MAGIC) {
+        lahar_error("Magic number does not match, likely not a freelist allocator we produced");
+        return;
+    }
 
-    return LAHAR_ERR_SUCCESS;
+    for (size_t i = 0; i < LAHAR_FREELIST_MEM_TYPES; i++) {
+        LaharFreelistChunkVec* vector = &cast->types[i];
+
+        while (vector->count) {
+            __lahar_fl_free_memchunk((LaharFreelistAllocator*)allocator, vector->chunks[0]);
+        }
+
+        lahar_free(vector->chunks);
+    }
+
+    memset(cast, 0, sizeof(*cast));
+    lahar_free(cast);
 }
 
-/* Attach a name to an allocation for leak reports. The string is not
- * copied; it must outlive the allocation */
-uint32_t lahar_freelist_allocation_name(LaharAllocation alloc, const char* name) {
-    if (!alloc) { return LAHAR_ERR_ILLEGAL_PARAMS; }
 
-    ((LaharFlAlloc*)alloc)->tag = name;
 
-    return LAHAR_ERR_SUCCESS;
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -11939,7 +12971,7 @@ static uint32_t lahar_load_device(LaharLoaderFunc loadfn) {
 
 
 
-#endif // LAHAR_IMPLEMENTATION
+#endif // LAHAR_IMPLEMENTATION && !LAHAR_IMPLEMENTATION_INCLUDED
 
 
 
