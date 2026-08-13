@@ -17,13 +17,18 @@ target_compile_options(lahar PRIVATE -Wall -Wextra -Werror
     -Wno-format-nonliteral -Wno-unused-parameter
 )
 
+# Passing the absolute source path makes __FILE__ absolute, which is how the
+# tests locate test/shader regardless of the working directory they run in.
 add_executable(tests ${CMAKE_CURRENT_SOURCE_DIR}/test/tests.c)
 target_include_directories(tests SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(tests PRIVATE LAHAR_WINDOW_WARN_OK)
 
 add_executable(cycle_tests ${CMAKE_CURRENT_SOURCE_DIR}/test/cycle.c)
 target_link_libraries(cycle_tests glfw)
 target_include_directories(cycle_tests SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(cycle_tests PRIVATE LAHAR_WINDOW_WARN_OK)
 
 add_executable(allocator_tests test/allocator.cpp)
 target_include_directories(allocator_tests SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} test)
 target_link_libraries(allocator_tests dl)
+target_compile_definitions(allocator_tests PRIVATE LAHAR_WINDOW_WARN_OK)

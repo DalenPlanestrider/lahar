@@ -2,11 +2,78 @@
 #include "../lahar.h"
 
 #include <stdlib.h>
+#include <unistd.h>
 
-const char* shader_vert = "/home/dalen/git/personal/lahar/test/shader/nasty_vert.spv";
-const char* shader_frag = "/home/dalen/git/personal/lahar/test/shader/nasty_frag.spv";
-//const char* shader_vert = "/home/dalen/git/personal/lahar/test/shader/shader3_vert.spv";
-//const char* shader_frag = "/home/dalen/git/personal/lahar/test/shader/shader3_frag.spv";
+/* Shader dir is resolved from this file's own location where possible, so the
+ * tests run from any working directory and any checkout path. Override with the
+ * LAHAR_TEST_SHADER_DIR env var, or pass a dir as argv[1]. */
+/* Which shader pair to exercise. "nasty" is the stress case: many vars, odd
+ * types, and interleaved decorations. */
+static const char* shader_name = "nasty";
+
+static char shader_vert_buf[1024];
+static char shader_frag_buf[1024];
+
+const char* shader_vert = shader_vert_buf;
+const char* shader_frag = shader_frag_buf;
+
+/* Strip the trailing filename off __FILE__ to get the dir holding this source */
+static void shader_paths_init(const char* dir_override) {
+    char dir[900];
+
+    if (dir_override) {
+        snprintf(dir, sizeof(dir), "%s", dir_override);
+    }
+    else {
+        const char* env = getenv("LAHAR_TEST_SHADER_DIR");
+
+        if (env) {
+            snprintf(dir, sizeof(dir), "%s", env);
+        }
+        else {
+            /* __FILE__ is only absolute if the compiler was invoked with an
+             * absolute path, so fall back to searching upward from the cwd for a
+             * test/shader dir. Covers building from the repo root, from build/,
+             * or from an IDE's out-of-tree dir. */
+            const char* file = __FILE__;
+            const char* slash = strrchr(file, '/');
+
+            dir[0] = '\0';
+
+            if (slash && file[0] == '/') {
+                const int len = (int)(slash - file);
+                snprintf(dir, sizeof(dir), "%.*s/shader", len, file);
+            }
+
+            if (!dir[0] || access(dir, R_OK) != 0) {
+                static const char* candidates[] = {
+                    "test/shader",
+                    "shader",
+                    "../test/shader",
+                    "../../test/shader",
+                    "../shader",
+                };
+
+                for (uint64_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+                    if (access(candidates[i], R_OK) == 0) {
+                        snprintf(dir, sizeof(dir), "%s", candidates[i]);
+                        break;
+                    }
+                }
+            }
+
+            if (!dir[0]) {
+                printf("Could not locate the test shader dir. Pass it as argv[1], or set LAHAR_TEST_SHADER_DIR.\n");
+                snprintf(dir, sizeof(dir), "test/shader");
+            }
+        }
+    }
+
+    snprintf(shader_vert_buf, sizeof(shader_vert_buf), "%s/%s_vert.spv", dir, shader_name);
+    snprintf(shader_frag_buf, sizeof(shader_frag_buf), "%s/%s_frag.spv", dir, shader_name);
+
+    printf("Shader dir: %s (pair: %s)\n", dir, shader_name);
+}
 
 #define tassert(cond, msg) if (!(cond)) { printf("\tAssert failed: %s\n", msg); return false; }
 
@@ -159,7 +226,10 @@ bool test3() {
     return success;
 }
 
-int main() {
+int main(int argc, char** argv) {
+    /* argv[1], if given, is the dir holding the .spv files */
+    shader_paths_init(argc > 1 ? argv[1] : NULL);
+
     uint32_t err;
 
     if ((err = lahar_init())) {

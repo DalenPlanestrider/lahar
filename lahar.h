@@ -98,6 +98,8 @@ Compile-Time Configuration options:
     LAHAR_DEFAULT_ALIGNMENT [positive integer expression] - default alignof(max_align_t)
 
     LAHAR_DEBUG_BREAK [expression] - default raise(SIGTRAP)
+
+    LAHAR_DEBUG - if defined, enable some extra internal debug checks and assertions
 */
 
 
@@ -236,7 +238,7 @@ Compile-Time Configuration options:
 #define LAHAR_ERR_OUT_OF_SPACE 0x00020015               // A fixed buffer ran out of space, update your defines and recompile
 #define LAHAR_ERR_MEMORY_UNSATISFIABLE 0x00020016       // You requested a type of GPU memory we don't have
 #define LAHAR_ERR_VERSION_UNSATISFIABLE 0x00020017      // The vulkan version could not be satisfied by this loader or device
-#define LAHAR_ERR_NOT_IMPLEMENTED 0x00020018            // The vulkan version could not be satisfied by this loader or device
+#define LAHAR_ERR_NOT_IMPLEMENTED 0x00020018            // Haven't gotten around to this yet
 
 struct Lahar;
 typedef struct Lahar Lahar;
@@ -522,6 +524,7 @@ struct Lahar {
     const char* appname;                                    // An optional setting for the app's name
     bool wantvalidation;                                    // True if validation layers were requested
     bool wantcommands;                                      // True if the window command buffers were requested
+    bool dynamic_rendering;                                 // True if dynamic rendering is available AND enabled, whether via the extension or 1.3 core. Only valid after build
     VkAllocationCallbacks* vkalloc;                         // One can set the vulkan CPU allocator, if one desires
     PFN_vkDebugUtilsMessengerCallbackEXT debug_callback;    // One can set the debug messenger callback, if one desires
     void* user_data;                                        // A user supplied pointer
@@ -742,7 +745,54 @@ uint32_t lahar_window_submit(LaharWindow* window, VkCommandBuffer cmd);
 /** Submit multiple command buffers to a window */
 uint32_t lahar_window_submit_all(LaharWindow* window, VkCommandBuffer* cmds, uint32_t cmd_count);
 
-/** Swap the window's visual buffers */
+/** Abandon the frame that lahar_window_frame_begin started, without drawing to it.
+ *
+ * Useful when you begin a frame and then discover you have nothing to draw: the
+ * window is minimised, the app lost focus, a resource is still loading, and so on.
+ *
+ * You cannot simply stop calling submit/present and start a new frame instead. A
+ * begun frame owns real GPU state: the image_available semaphore has a pending
+ * signal that something must wait on, the in_flight fence has been reset and only
+ * a queue submit will ever signal it again, and the acquired swapchain image is
+ * held by your process until it is presented. Dropping a frame on the floor
+ * leaks a swapchain image and deadlocks the next wait on that fence.
+ *
+ * So this does the minimum real work to retire the frame: under dynamic
+ * rendering it transitions the color attachment to PRESENT_SRC, then submits and
+ * presents. The contents are whatever the swapchain image already held, which is
+ * why this is for frames you were never going to show anyway.
+ *
+ * If you are using render passes rather than dynamic rendering, lahar does not
+ * track the attachment layout (vkCmdBeginRenderPass moves it outside lahar's
+ * knowledge), so no transition is recorded and you must pass a command buffer
+ * that leaves the color attachment in PRESENT_SRC yourself.
+ *
+ * Cheaper still is to check whether you have anything to draw BEFORE calling
+ * frame_begin, and simply not begin a frame. Prefer that when you can.
+ *
+ * Calling this in the BEGIN phase is a no-op success, so it is safe to call
+ * defensively. Calling it after you have already submitted is an error, since
+ * at that point the frame can only be presented.
+ *
+ * @param window The window whose frame should be abandoned
+ * @param cmd A command buffer to record the transition into, or VK_NULL_HANDLE to
+ *        use the window's own command buffer (requires request_command_buffers)
+ */
+uint32_t lahar_window_frame_cancel(LaharWindow* window, VkCommandBuffer cmd);
+
+/** Swap the window's visual buffers.
+ *
+ * If the swapchain went out of date (a resize, usually) this either recreates it
+ * and returns that call's result, or returns LAHAR_ERR_SWAPCHAIN_OUT_OF_DATE if
+ * auto swap resizing is off. Same handling as lahar_window_frame_begin, so a
+ * resize is never reported as a generic LAHAR_ERR_VK_ERR.
+ *
+ * The frame always ends, even on failure: the command buffers were already
+ * submitted, so the frame phase advances regardless and it is safe to go
+ * straight into the next lahar_window_frame_begin.
+ *
+ * @param window The window to present
+ */
 uint32_t lahar_window_present(LaharWindow* window);
 
 /** Resize a window's swapchain when the window changes size
@@ -899,6 +949,10 @@ uint32_t lahar_cmd_attachment_transition(VkCommandBuffer cmd, LaharWindow* windo
 /** A utility to make calling vkCmdBeginRendering easier. Handles
  * marshalling all the attachment info from your window.
  *
+ * REQUIRES dynamic rendering (see lahar->dynamic_rendering). Calling this
+ * without it is a programming error and fails a fatal assert, since the
+ * underlying entry point was never loaded.
+ *
  * @param cmd The command buffer to record to
  * @param window The window to begin rendering with
  */
@@ -1052,6 +1106,9 @@ struct LaharShaderBuilder {
     VkRenderPass renderPass;
     uint32_t subpass;
     bool use_subpass_value; // have to set this if subpass is set, since 0 is a valid default
+
+    const VkDescriptorSetLayout* set_layouts;   // Optional caller-owned set layouts to build the pipeline layout from
+    uint32_t set_layout_count;
 };
 
 enum LaharShaderVarStorageClass {
@@ -1216,6 +1273,12 @@ void lahar_shader_builder_set_depth_stencil_state(LaharShaderBuilder* builder, c
 void lahar_shader_builder_set_color_blend_state(LaharShaderBuilder* builder, const VkPipelineColorBlendStateCreateInfo* pColorBlendState);
 void lahar_shader_builder_set_dynamic_state(LaharShaderBuilder* builder, const VkPipelineDynamicStateCreateInfo* pDynamicState);
 void lahar_shader_builder_set_layout(LaharShaderBuilder* builder, VkPipelineLayout layout);
+/** Build the pipeline layout from these caller-owned descriptor set layouts instead of
+ * reflecting its own. Typically the output of lahar_shader_reflect_set_layouts(), kept so
+ * you can also allocate descriptor sets from them. Only stores the pointer, so the array
+ * must survive until build is called. Ignored if set_layout() was used. The push constant
+ * range is still taken from reflection. */
+void lahar_shader_builder_set_descriptor_set_layouts(LaharShaderBuilder* builder, const VkDescriptorSetLayout* layouts, uint32_t count);
 void lahar_shader_builder_set_render_pass(LaharShaderBuilder* builder, VkRenderPass renderPass);
 void lahar_shader_builder_set_subpass(LaharShaderBuilder* builder, uint32_t subpass);
 
@@ -1235,7 +1298,12 @@ void lahar_shader_builder_set_subpass(LaharShaderBuilder* builder, uint32_t subp
  *
  * @param info The configured shader info struct
  * @param pipeline (out) The created pipeline, or VK_NULL_HANDLE if failed
- * @param layout (out) The layout, _IF_ one was created by this function, else VK_NULL_HANDLE
+ * @param layout (out) (nullable) The layout, _IF_ one was created by this function, else
+ *        VK_NULL_HANDLE. This is an ownership signal, not just a handle: a non-null result
+ *        is a layout you are now responsible for destroying. It is deliberately NOT set to
+ *        a layout you supplied via set_layout(), so that destroying whatever comes back is
+ *        always correct and never double-frees a layout you share between pipelines.
+ *        Pass NULL if you supplied the layout yourself and have nothing to collect.
  * @return Error code (LAHAR_ERR_SUCCESS on success)
  */
 uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, VkPipelineLayout* layout);
@@ -1269,6 +1337,35 @@ uint32_t lahar_shader_introspect(const LaharShaderStage* stages, uint32_t num_st
  */
 void lahar_shader_introspection_print(const LaharShaderVarInfo* infos, uint32_t count);
 
+/** Create the descriptor set layouts implied by introspected shader vars.
+ *
+ * Two-pass, like lahar_shader_introspect: call once with layouts_out NULL to
+ * learn how many sets there are, allocate, then call again to create them.
+ *
+ * The returned handles are owned by YOU. Destroy them with
+ * vkDestroyDescriptorSetLayout once the pipeline layouts using them are built
+ * and you are done allocating descriptor sets from them.
+ *
+ * Sets are dense and indexed by set number: if a shader uses only set 2, this
+ * reports 3 sets and creates empty layouts for 0 and 1, so that layouts_out
+ * can be handed straight to VkPipelineLayoutCreateInfo::pSetLayouts.
+ *
+ * Pass the results to lahar_shader_builder_set_descriptor_set_layouts() to have
+ * the pipeline built against these exact layouts, so the same handles you keep
+ * for vkAllocateDescriptorSets are the ones the pipeline was created with.
+ *
+ * @param vars The output of lahar_shader_introspect
+ * @param var_count The number of vars
+ * @param set_count (out) The number of sets that will be/has been written
+ * @param layouts_out (out) (nullable) Array of at least *set_count layouts to create into
+ */
+uint32_t lahar_shader_reflect_set_layouts(
+    const LaharShaderVarInfo* vars,
+    uint32_t var_count,
+    uint32_t* set_count,
+    VkDescriptorSetLayout* layouts_out
+);
+
 
 
 
@@ -1295,9 +1392,133 @@ void lahar_allocator_freelist_deinit(LaharAllocator* allocator);
 
 
 
+/* ============================================================================
+ * GPU Memory
+ * ============================================================================
+ * Thin wrappers over lahar->gpu_allocator, so that the common cases do not
+ * require reaching through the vtable and passing the allocator to itself.
+ * Whichever allocator is in use (the built in freelist, VMA, or your own) these
+ * dispatch to it, so calling code does not have to care which.
+ *
+ * All of these require a built lahar and return LAHAR_ERR_INVALID_STATE if no
+ * allocator exists yet.
+ *
+ * Nothing here is owned by lahar: every successful create pairs with a destroy
+ * that you are responsible for, before lahar_deinit.
+ */
+
+/** Create a buffer and back it with memory.
+ *
+ * @param info The buffer create info, passed verbatim to vkCreateBuffer
+ * @param alloc_info How the memory should be selected
+ * @param buffer_out (out) The created buffer
+ * @param alloc_out (out) The allocation backing it, needed to map or free
+ */
+uint32_t lahar_buffer_create(
+    const VkBufferCreateInfo* info,
+    const LaharAllocationCreateInfo* alloc_info,
+    VkBuffer* buffer_out,
+    LaharAllocation* alloc_out
+);
+
+/** Create a buffer without spelling out a VkBufferCreateInfo. Covers the common
+ * case of a single queue, non-sparse, non-aliased buffer.
+ *
+ * @param size Size in bytes
+ * @param usage What the buffer will be used for
+ * @param mem_usage Where the memory should live
+ * @param role Finer grained hint, optional, may be 0
+ * @param buffer_out (out) The created buffer
+ * @param alloc_out (out) The allocation backing it
+ */
+uint32_t lahar_buffer_create_simple(
+    uint64_t size,
+    VkBufferUsageFlags usage,
+    LaharMemoryUsage mem_usage,
+    LaharAllocationRole role,
+    VkBuffer* buffer_out,
+    LaharAllocation* alloc_out
+);
+
+/** Destroy a buffer and release its memory. Safe to call with VK_NULL_HANDLE. */
+uint32_t lahar_buffer_destroy(VkBuffer buffer, LaharAllocation alloc);
+
+/** Create an image and back it with memory.
+ *
+ * @param info The image create info, passed verbatim to vkCreateImage
+ * @param alloc_info How the memory should be selected
+ * @param image_out (out) The created image
+ * @param alloc_out (out) The allocation backing it
+ */
+uint32_t lahar_image_create(
+    const VkImageCreateInfo* info,
+    const LaharAllocationCreateInfo* alloc_info,
+    VkImage* image_out,
+    LaharAllocation* alloc_out
+);
+
+/** Destroy an image and release its memory. Safe to call with VK_NULL_HANDLE. */
+uint32_t lahar_image_destroy(VkImage image, LaharAllocation alloc);
+
+/** Map an allocation into host address space. Only valid for host visible memory.
+ * Nested maps of the same allocation are reference counted, so every map needs a
+ * matching unmap.
+ *
+ * @param alloc The allocation to map
+ * @param out (out) The mapped pointer, already offset to this allocation
+ */
+uint32_t lahar_memory_map(LaharAllocation alloc, void** out);
+
+/** Unmap an allocation previously mapped with lahar_memory_map */
+uint32_t lahar_memory_unmap(LaharAllocation alloc);
+
+/** Flush host writes so the device can see them. A no-op on coherent memory, but
+ * always safe (and correct) to call.
+ *
+ * @param alloc The allocation
+ * @param offset Byte offset within the allocation
+ * @param size Bytes to flush, or VK_WHOLE_SIZE
+ */
+uint32_t lahar_memory_flush(LaharAllocation alloc, uint64_t offset, uint64_t size);
+
+/** Invalidate the host cache so host reads see device writes. A no-op on coherent
+ * memory, but always safe to call.
+ *
+ * @param alloc The allocation
+ * @param offset Byte offset within the allocation
+ * @param size Bytes to invalidate, or VK_WHOLE_SIZE
+ */
+uint32_t lahar_memory_invalidate(LaharAllocation alloc, uint64_t offset, uint64_t size);
+
+/** Copy data into a host visible allocation: map, copy, flush, unmap.
+ *
+ * This is the whole upload for memory the host can write to. It is NOT valid for
+ * device only memory; that needs a staging buffer and a transfer command.
+ *
+ * @param alloc The destination allocation
+ * @param offset Byte offset within the allocation to write at
+ * @param data The bytes to copy
+ * @param size How many bytes to copy
+ */
+uint32_t lahar_memory_write(LaharAllocation alloc, uint64_t offset, const void* data, uint64_t size);
+
+/** Copy data out of a host visible allocation: map, invalidate, copy, unmap.
+ *
+ * @param alloc The source allocation
+ * @param offset Byte offset within the allocation to read from
+ * @param data (out) Where to copy the bytes to
+ * @param size How many bytes to copy
+ */
+uint32_t lahar_memory_read(LaharAllocation alloc, uint64_t offset, void* data, uint64_t size);
+
+
+
+
+
+
 extern Lahar __lahar_instance;
 extern Lahar* lahar;
-#define LAHAR_VERSION VK_MAKE_VERSION(4, 0, 0)
+#define LAHAR_VERSION VK_MAKE_VERSION(4, 1, 0)
 
 #if defined(__cplusplus) && defined(LAHAR_C_LINKAGE)
 }
@@ -2531,16 +2752,14 @@ extern PFN_vkAcquireNextImage2KHR vkAcquireNextImage2KHR;
 
 #endif //LAHAR_H
 
+#define LAHAR_IMPLEMENTATION
 #if defined(LAHAR_IMPLEMENTATION) && !defined(LAHAR_IMPLEMENTATION_INCLUDED)
 #define LAHAR_IMPLEMENTATION_INCLUDED
 
 
-
-
-
-// #######################
-// ## LAHAR SOURCE CODE ##
-// #######################
+// ============================================================================
+// Region: Main Implementation
+// ============================================================================
 
 
 #ifndef lahar_malloc
@@ -2647,10 +2866,7 @@ extern PFN_vkAcquireNextImage2KHR vkAcquireNextImage2KHR;
     #ifdef LAHAR_DEBUG
         #define LAHAR_ASSERT(cond) LAHAR_FATAL_ASSERT(cond)
     #else
-        /* sizeof leaves the condition unevaluated (no side effects, no
-         * codegen) but still marks referenced variables as used, so
-         * assert-only variables don't trip -Wunused-* in release builds. */
-        #define LAHAR_ASSERT(cond) do { (void)sizeof((cond)); } while(0)
+        #define LAHAR_ASSERT(cond)
     #endif
 #endif
 
@@ -2663,7 +2879,7 @@ extern PFN_vkAcquireNextImage2KHR vkAcquireNextImage2KHR;
 Lahar __lahar_instance = ZINIT;
 Lahar* lahar = &__lahar_instance;
 
-char* lahar_strdup(const char* str) {
+static char* lahar_strdup(const char* str) {
     size_t len = strlen(str);
     char* cpy = (char*) lahar_malloc(len + 1);
 
@@ -2674,7 +2890,7 @@ char* lahar_strdup(const char* str) {
     return cpy;
 }
 
-void* lahar_alloc_or_resize(void* existing, size_t targetsize) {
+static void* lahar_alloc_or_resize(void* existing, size_t targetsize) {
     if (!existing) {
         return lahar_malloc(targetsize);
     }
@@ -2702,7 +2918,7 @@ void* lahar_alloc_or_resize(void* existing, size_t targetsize) {
 #endif
 
 
-void __lahar_trace(const char* msg, ...) {
+static void __lahar_trace(const char* msg, ...) {
     if (lahar->debug_level <= LAHAR_DEBUG_TRACE) {
         va_list ap;
         va_start(ap, msg);
@@ -2716,7 +2932,7 @@ void __lahar_trace(const char* msg, ...) {
     }
 }
 
-void __lahar_info(const char* msg, ...) {
+static void __lahar_info(const char* msg, ...) {
     if (lahar->debug_level <= LAHAR_DEBUG_INFO) {
         va_list ap;
         va_start(ap, msg);
@@ -2730,7 +2946,7 @@ void __lahar_info(const char* msg, ...) {
     }
 }
 
-void __lahar_warn(const char* msg, ...) {
+static void __lahar_warn(const char* msg, ...) {
     if (lahar->debug_level <= LAHAR_DEBUG_WARNING) {
         va_list ap;
         va_start(ap, msg);
@@ -2744,7 +2960,7 @@ void __lahar_warn(const char* msg, ...) {
     }
 }
 
-void __lahar_error(const char* msg, ...) {
+static void __lahar_error(const char* msg, ...) {
     if (lahar->debug_level <= LAHAR_DEBUG_ERROR) {
         va_list ap;
         va_start(ap, msg);
@@ -3194,12 +3410,12 @@ static size_t __mpos = 0;
 static size_t __mcheck[LAHAR_M_CHECK_CT];
 static size_t __mchkct = 0;
 
-void lahar_temp_mcheck() {
+static void lahar_temp_mcheck() {
     LAHAR_FATAL_ASSERT(__mchkct < sizeof(__mcheck) / sizeof(__mcheck[0])); // if this trips, Lahar is broken
     __mcheck[__mchkct++] = __mpos;
 }
 
-void lahar_temp_mpop() {
+static void lahar_temp_mpop() {
     if (__mchkct > 0) {
         __mchkct--;
         __mpos = __mcheck[__mchkct];
@@ -3207,7 +3423,7 @@ void lahar_temp_mpop() {
 }
 
 
-void* lahar_temp_alloc_aligned(size_t bytes, size_t alignment) {
+static void* lahar_temp_alloc_aligned(size_t bytes, size_t alignment) {
     uintptr_t current = (uintptr_t)&__marena[__mpos];
     size_t padding = (-(size_t)current) & (alignment - 1);
 
@@ -3223,11 +3439,11 @@ void* lahar_temp_alloc_aligned(size_t bytes, size_t alignment) {
     return ret;
 }
 
-void* lahar_temp_alloc(size_t bytes) {
+static void* lahar_temp_alloc(size_t bytes) {
     return lahar_temp_alloc_aligned(bytes, LAHAR_DEFAULT_ALIGNMENT);
 }
 
-char* lahar_temp_strdup(const char* str) {
+static char* lahar_temp_strdup(const char* str) {
     size_t len = strlen(str);
     char* buf = (char*)lahar_temp_alloc(len + 1);
     memcpy(buf, str, len + 1);
@@ -4164,7 +4380,7 @@ void lahar_deinit(void) {
 
 
 /** This builds a complete list of the instance level extensions required */
-uint32_t __lahar_temp_extensions(LaharWindow* window, uint32_t* count, char*** ext_out) {
+static uint32_t __lahar_temp_extensions(LaharWindow* window, uint32_t* count, char*** ext_out) {
     uint32_t err = LAHAR_ERR_SUCCESS;
 
     uint32_t ext_count = (uint32_t)lahar->extensions.rie_count;
@@ -4213,7 +4429,7 @@ end:
 }
 
 
-uint32_t __lahar_build_inst_extensions() {
+static uint32_t __lahar_build_inst_extensions() {
     uint32_t err = LAHAR_ERR_SUCCESS;
     lahar_temp_mcheck();
 
@@ -4263,7 +4479,7 @@ end:
     return err;
 }
 
-uint32_t __lahar_build_instance(void) {
+static uint32_t __lahar_build_instance(void) {
     uint32_t err = LAHAR_ERR_SUCCESS;
     lahar_temp_mcheck();
 
@@ -4388,7 +4604,7 @@ end:
     return err;
 }
 
-uint32_t __lahar_build_early_surface(void) {
+static uint32_t __lahar_build_early_surface(void) {
     uint32_t err = LAHAR_ERR_SUCCESS;
 
     for (size_t i = 0; i < lahar->window_count; i++) {
@@ -4402,7 +4618,7 @@ uint32_t __lahar_build_early_surface(void) {
     return err;
 }
 
-uint32_t __lahar_build_physdev(void) {
+static uint32_t __lahar_build_physdev(void) {
     uint32_t err = LAHAR_ERR_SUCCESS;
     lahar_temp_mcheck();
 
@@ -4539,7 +4755,7 @@ end:
     return err;
 }
 
-uint32_t __lahar_build_device(void) {
+static uint32_t __lahar_build_device(void) {
     uint32_t err = LAHAR_ERR_SUCCESS;
     lahar_temp_mcheck();
 
@@ -4594,23 +4810,58 @@ uint32_t __lahar_build_device(void) {
         .dynamicRendering = VK_TRUE
     };
 
-    if (lahar_extension_has_device(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME)) {
+    /* Dynamic rendering can arrive three ways: the KHR extension, the 1.3 core
+     * feature bit via VkPhysicalDeviceVulkan13Features, or the standalone
+     * feature struct. Resolve all of them here into lahar->dynamic_rendering so
+     * that nothing downstream has to re-derive it (and so that nothing
+     * downstream gets it wrong by only checking the extension). */
+    {
         const VkPhysicalDeviceDynamicRenderingFeatures* dyn_feature =
         (const VkPhysicalDeviceDynamicRenderingFeatures* )__lahar_pnext_fetch(pnext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES);
 
         const VkPhysicalDeviceVulkan13Features* vk13_feature =
         (const VkPhysicalDeviceVulkan13Features* )__lahar_pnext_fetch(pnext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES);
 
-        if (vk13_feature) {
-            if (!vk13_feature->dynamicRendering) {
-                lahar_error("The dynamic rendering extension is enabled, and you passed a Vulkan 1.3 features, but without dynamic rendering on");
-                err = LAHAR_ERR_INVALID_CONFIGURATION;
-                goto end;
+        const bool has_ext = lahar_extension_has_device(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+        const bool is_1_3 = VK_API_VERSION_MINOR(lahar->vkversion) >= 3;
+
+        if (has_ext) {
+            if (vk13_feature) {
+                if (!vk13_feature->dynamicRendering) {
+                    lahar_error("The dynamic rendering extension is enabled, and you passed a Vulkan 1.3 features, but without dynamic rendering on");
+                    err = LAHAR_ERR_INVALID_CONFIGURATION;
+                    goto end;
+                }
+
+                lahar->dynamic_rendering = true;
+            }
+            else if (!dyn_feature) {
+                dynamic_rendering_feature.pNext = pnext;
+                pnext = (void*)&dynamic_rendering_feature;
+                lahar->dynamic_rendering = true;
+            }
+            else {
+                // User supplied the struct themselves, respect their bit
+                lahar->dynamic_rendering = dyn_feature->dynamicRendering == VK_TRUE;
             }
         }
-        else if (!dyn_feature) {
-            dynamic_rendering_feature.pNext = pnext;
-            pnext = (void*)&dynamic_rendering_feature;
+        else if (is_1_3) {
+            // Core in 1.3, but the feature still has to be switched on. We do not
+            // inject it here: the user did not ask for the extension, so opting
+            // them into the feature would be a surprise.
+            if (vk13_feature) {
+                lahar->dynamic_rendering = vk13_feature->dynamicRendering == VK_TRUE;
+            }
+            else if (dyn_feature) {
+                lahar->dynamic_rendering = dyn_feature->dynamicRendering == VK_TRUE;
+            }
+        }
+
+        if (lahar->dynamic_rendering) {
+            lahar_info("Dynamic rendering is enabled");
+        }
+        else {
+            lahar_info("Dynamic rendering is NOT enabled, render passes are required");
         }
     }
 
@@ -4653,7 +4904,7 @@ end:
     return err;
 }
 
-uint32_t __lahar_build_swapchain(void) {
+static uint32_t __lahar_build_swapchain(void) {
     uint32_t err = LAHAR_ERR_SUCCESS;
     lahar_temp_mcheck();
 
@@ -4876,7 +5127,7 @@ end:
     return err;
 }
 
-uint32_t __lahar_build_sync(void) {
+static uint32_t __lahar_build_sync(void) {
     uint32_t err = LAHAR_ERR_SUCCESS;
 
     VkSemaphoreCreateInfo sem_info = {
@@ -5046,6 +5297,70 @@ uint32_t lahar_window_submit(LaharWindow* window, VkCommandBuffer cmd) {
     return lahar_window_submit_all(window, &cmd, 1);
 }
 
+uint32_t lahar_window_frame_cancel(LaharWindow* window, VkCommandBuffer cmd) {
+    if (!window) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+    LaharWindowState* winstate = lahar_window_state(window);
+
+    if (!winstate) { return LAHAR_ERR_INVALID_WINDOW; }
+
+    // Nothing was begun, so there is nothing to retire. Safe to call blind.
+    if (winstate->frame_phase == LAHAR_FRAME_PHASE_BEGIN) {
+        return LAHAR_ERR_SUCCESS;
+    }
+
+    // Already submitted: the only legal move left is present. Cancelling here
+    // would strand the render_finished signal from that submit.
+    if (winstate->frame_phase != LAHAR_FRAME_PHASE_DRAW) {
+        return LAHAR_ERR_INVALID_FRAME_STATE;
+    }
+
+    uint32_t err = LAHAR_ERR_SUCCESS;
+
+    VkCommandBuffer target = cmd != VK_NULL_HANDLE ? cmd : lahar_window_command_buffer(window);
+
+    if (target == VK_NULL_HANDLE) { return LAHAR_ERR_NO_COMMAND_BUFFER; }
+
+    VkCommandBufferBeginInfo begin_info = ZINIT;
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    vkResetCommandBuffer(target, 0);
+
+    if ((lahar->vkresult = vkBeginCommandBuffer(target, &begin_info)) != VK_SUCCESS) {
+        return LAHAR_ERR_VK_ERR;
+    }
+
+    // An acquired image is not in PRESENT_SRC, and present requires that it is,
+    // so the "empty" frame still needs this one barrier to be legal.
+    //
+    // Only under dynamic rendering, though. With render passes the layout is
+    // moved by vkCmdBeginRenderPass per the attachment's initial/final layouts,
+    // which happens outside lahar's knowledge, so attachment->layout is not a
+    // value we can trust to build a barrier from. Users on that path own the
+    // transition themselves and should pass a command buffer that does it.
+    if (lahar->dynamic_rendering) {
+        for (uint32_t i = 0; i < winstate->attachment_count; i++) {
+            if (winstate->attachment_configs[i].role != LAHAR_ATTROLE_COLOR) { continue; }
+
+            if ((err = lahar_cmd_attachment_transition(target, window, i, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR))) {
+                vkEndCommandBuffer(target);
+                return err;
+            }
+        }
+    }
+
+    if ((lahar->vkresult = vkEndCommandBuffer(target)) != VK_SUCCESS) {
+        return LAHAR_ERR_VK_ERR;
+    }
+
+    // Consumes image_available and signals in_flight + render_finished, which is
+    // the whole point: those are what a dropped frame would have stranded.
+    if ((err = lahar_window_submit(window, target))) { return err; }
+
+    return lahar_window_present(window);
+}
+
 
 uint32_t lahar_window_present(LaharWindow* window) {
     LaharWindowState* winstate = lahar_window_state(window);
@@ -5069,13 +5384,31 @@ uint32_t lahar_window_present(LaharWindow* window) {
         present_info.pImageIndices = &winstate->frame_index;
     }
 
-    if ((lahar->vkresult = vkQueuePresentKHR(lahar->presentQueue, &present_info)) != VK_SUCCESS) {
-        return LAHAR_ERR_VK_ERR;
+    lahar->vkresult = vkQueuePresentKHR(lahar->presentQueue, &present_info);
+
+    // The frame is over either way: the command buffers were already submitted,
+    // so the phase has to advance even on failure or the window wedges in
+    // PRESENT forever and every later frame_begin returns INVALID_FRAME_STATE.
+    winstate->flight_index = (winstate->flight_index + 1) % winstate->max_in_flight;
+    winstate->frame_phase = LAHAR_FRAME_PHASE_BEGIN;
+
+    // SUBOPTIMAL means the image *was* presented, just not ideally for the
+    // surface any more. OUT_OF_DATE means it wasn't. Both are "the swapchain
+    // needs recreating", which is routine (any resize), not an error, so they
+    // get the same treatment frame_begin already gives them.
+    if (lahar->vkresult == VK_SUBOPTIMAL_KHR || lahar->vkresult == VK_ERROR_OUT_OF_DATE_KHR) {
+        lahar_trace("Presented, swapchain out of date");
+
+        if (winstate->auto_recreate_swap) {
+            return lahar_window_swapchain_resize(window);
+        }
+
+        return LAHAR_ERR_SWAPCHAIN_OUT_OF_DATE;
     }
 
-    winstate->flight_index = (winstate->flight_index + 1) % winstate->max_in_flight;
-
-    winstate->frame_phase = LAHAR_FRAME_PHASE_BEGIN;
+    if (lahar->vkresult != VK_SUCCESS) {
+        return LAHAR_ERR_VK_ERR;
+    }
 
     return LAHAR_ERR_SUCCESS;
 }
@@ -5088,12 +5421,15 @@ VkCommandBuffer lahar_window_command_buffer(LaharWindow* window) {
 
     if (state->frame_phase != LAHAR_FRAME_PHASE_DRAW) { return VK_NULL_HANDLE; }
 
+    // NULL unless lahar_builder_request_command_buffers() was called
+    if (!state->commands) { return VK_NULL_HANDLE; }
+
     return state->commands[state->frame_index];
 }
 
 
 
-VkAccessFlags __lahar_access_mask(VkImageLayout layout) {
+static VkAccessFlags __lahar_access_mask(VkImageLayout layout) {
     switch (layout) {
         case VK_IMAGE_LAYOUT_UNDEFINED:
         case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
@@ -5113,7 +5449,7 @@ VkAccessFlags __lahar_access_mask(VkImageLayout layout) {
     }
 }
 
-VkPipelineStageFlags __lahar_pipeline_stage(VkImageLayout layout) {
+static VkPipelineStageFlags __lahar_pipeline_stage(VkImageLayout layout) {
     switch (layout) {
         case VK_IMAGE_LAYOUT_UNDEFINED:
             return VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
@@ -5212,6 +5548,10 @@ uint32_t lahar_window_wait_inactive(LaharWindow* window) {
 }
 
 uint32_t lahar_cmd_begin_rendering(VkCommandBuffer cmd, LaharWindow* window) {
+    if (!lahar->dynamic_rendering) {
+        return LAHAR_ERR_INVALID_CONFIGURATION;
+    }
+
     lahar_temp_mcheck();
 
     uint32_t err = LAHAR_ERR_SUCCESS;
@@ -5232,7 +5572,7 @@ uint32_t lahar_cmd_begin_rendering(VkCommandBuffer cmd, LaharWindow* window) {
     VkRenderingAttachmentInfo* depth_attachment_ptr = NULL;
     VkRenderingAttachmentInfo* stencil_attachment_ptr = NULL;
 
-    const uint32_t frame_index = state->frame_index;
+    uint32_t frame_index = 0;
 
     if (!state) {
         err = LAHAR_ERR_INVALID_WINDOW;
@@ -5243,6 +5583,8 @@ uint32_t lahar_cmd_begin_rendering(VkCommandBuffer cmd, LaharWindow* window) {
         err = LAHAR_ERR_INVALID_FRAME_STATE;
         goto error;
     }
+
+    frame_index = state->frame_index;
 
     for (uint32_t i = 0; i < state->attachment_count; i++) {
         if (
@@ -5497,7 +5839,7 @@ uint32_t lahar_shader_var_type_to_input_type(LaharShaderVarType svt, VkFormat* f
     return LAHAR_ERR_SUCCESS;
 }
 
-uint32_t __lahar_binding_info(const LaharShaderVarInfo* shader_vars, const LaharShaderVarInfo* var, VkDescriptorSetLayoutBinding* binding) {
+static uint32_t __lahar_binding_info(const LaharShaderVarInfo* shader_vars, const LaharShaderVarInfo* var, VkDescriptorSetLayoutBinding* binding) {
     uint32_t err = LAHAR_ERR_SUCCESS;
 
     switch (var->storage_class) {
@@ -5547,7 +5889,13 @@ uint32_t __lahar_binding_info(const LaharShaderVarInfo* shader_vars, const Lahar
     return err;
 }
 
-uint32_t __lahar_shader_set_binding_infos(uint32_t shader_var_count, LaharShaderVarInfo* shader_vars, uint32_t set_number, uint32_t* binding_count_out, VkDescriptorSetLayoutBinding* bindings_out) {
+static uint32_t __lahar_shader_set_binding_infos(
+    uint32_t shader_var_count,
+    LaharShaderVarInfo* shader_vars,
+    uint32_t set_number,
+    uint32_t* binding_count_out,
+    VkDescriptorSetLayoutBinding* bindings_out
+) {
     if (!shader_vars || !binding_count_out) {
         return LAHAR_ERR_ILLEGAL_PARAMS;
     }
@@ -5609,19 +5957,9 @@ uint32_t __lahar_shader_set_binding_infos(uint32_t shader_var_count, LaharShader
     return LAHAR_ERR_SUCCESS;
 }
 
-uint32_t __lahar_shader_create_layout(uint32_t shader_var_count, LaharShaderVarInfo* shader_vars, VkPipelineLayout* created) {
-    lahar_temp_mcheck();
-
-    uint32_t err = LAHAR_ERR_SUCCESS;
+/* Util: the highest set number used by any top level descriptor, or UINT32_MAX if the shader has no descriptors at all. */
+static uint32_t __lahar_shader_max_set_number(uint32_t shader_var_count, const LaharShaderVarInfo* shader_vars) {
     uint32_t max_set_number = UINT32_MAX;
-    uint32_t total_sets = 0;
-    uint32_t set_number = 0;
-    VkDescriptorSetLayoutBinding* set_bindings = NULL;
-    VkDescriptorSetLayout* set_layouts = NULL;
-    VkPushConstantRange push_constant = {};
-    bool has_push_constant = false;
-
-    VkPipelineLayoutCreateInfo layout_info = ZINIT;
 
     for (uint32_t i = 0; i < shader_var_count; i++) {
         const LaharShaderVarInfo* var = &shader_vars[i];
@@ -5641,47 +5979,141 @@ uint32_t __lahar_shader_create_layout(uint32_t shader_var_count, LaharShaderVarI
         }
     }
 
+    return max_set_number;
+}
+
+/* Util: find the push constant range implied by the vars, if any */
+static bool __lahar_shader_push_range(uint32_t shader_var_count, const LaharShaderVarInfo* shader_vars, VkPushConstantRange* range) {
     for (uint32_t i = 0; i < shader_var_count; i++) {
         const LaharShaderVarInfo* var = &shader_vars[i];
 
         if (var->storage_class == LAHAR_SVSC_PUSH_CONSTANT && var->parent_var == UINT32_MAX) {
-            has_push_constant = true;
-
-            push_constant.offset = var->offset;
-            push_constant.size = var->size;
-            push_constant.stageFlags = var->stages;
-
-            break;
+            range->offset = var->offset;
+            range->size = var->size;
+            range->stageFlags = var->stages;
+            return true;
         }
     }
 
-    if (max_set_number != UINT32_MAX) {
-        total_sets = max_set_number + 1;
-        set_layouts = (VkDescriptorSetLayout*)lahar_temp_alloc(total_sets * sizeof(*set_layouts));
+    return false;
+}
 
-        for (; set_number <= max_set_number; set_number++) {
-            uint32_t binding_count = 0;
+uint32_t lahar_shader_reflect_set_layouts(
+    const LaharShaderVarInfo* vars,
+    uint32_t var_count,
+    uint32_t* set_count,
+    VkDescriptorSetLayout* layouts_out
+) {
+    if (!vars || !set_count) { return LAHAR_ERR_ILLEGAL_PARAMS; }
 
-            if ((err = __lahar_shader_set_binding_infos(shader_var_count, shader_vars, set_number, &binding_count, NULL))) {
-                goto error;
+    const uint32_t max_set_number = __lahar_shader_max_set_number(var_count, vars);
+    const uint32_t total_sets = max_set_number == UINT32_MAX ? 0 : max_set_number + 1;
+
+    if (!layouts_out) {
+        *set_count = total_sets;
+        return LAHAR_ERR_SUCCESS;
+    }
+
+    // Guard against the caller having grown the shader between the two passes
+    if (*set_count < total_sets) {
+        lahar_error(
+            "Set layout array holds %" PRIu32 " sets, but the shaders need %" PRIu32,
+            *set_count, total_sets
+        );
+        return LAHAR_ERR_OUT_OF_SPACE;
+    }
+
+    lahar_temp_mcheck();
+
+    uint32_t err = LAHAR_ERR_SUCCESS;
+    uint32_t created = 0;
+
+    for (; created < total_sets; created++) {
+        uint32_t binding_count = 0;
+        VkDescriptorSetLayoutBinding* set_bindings = NULL;
+
+        if ((err = __lahar_shader_set_binding_infos(var_count, (LaharShaderVarInfo*)vars, created, &binding_count, NULL))) {
+            goto error;
+        }
+
+        set_bindings = (VkDescriptorSetLayoutBinding*)lahar_temp_alloc(binding_count * sizeof(*set_bindings));
+
+        if ((err = __lahar_shader_set_binding_infos(var_count, (LaharShaderVarInfo*)vars, created, &binding_count, set_bindings))) {
+            goto error;
+        }
+
+        VkDescriptorSetLayoutCreateInfo create_info = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .bindingCount = binding_count,
+            .pBindings = set_bindings
+        };
+
+        if ((lahar->vkresult = vkCreateDescriptorSetLayout(lahar->device, &create_info, lahar->vkalloc, &layouts_out[created])) != VK_SUCCESS) {
+            err = LAHAR_ERR_VK_ERR;
+            goto error;
+        }
+    }
+
+    *set_count = total_sets;
+
+    lahar_temp_mpop();
+    return LAHAR_ERR_SUCCESS;
+
+error:
+    // Nothing is handed back on failure, so don't leak the partial run
+    for (uint32_t i = 0; i < created; i++) {
+        vkDestroyDescriptorSetLayout(lahar->device, layouts_out[i], lahar->vkalloc);
+        layouts_out[i] = VK_NULL_HANDLE;
+    }
+
+    *set_count = 0;
+
+    lahar_temp_mpop();
+    return err;
+}
+
+static uint32_t __lahar_shader_create_layout(
+    uint32_t shader_var_count,
+    LaharShaderVarInfo* shader_vars,
+    const VkDescriptorSetLayout* provided_sets,
+    uint32_t provided_set_count,
+    VkPipelineLayout* created
+) {
+    lahar_temp_mcheck();
+
+    uint32_t err = LAHAR_ERR_SUCCESS;
+    uint32_t total_sets = 0;
+    VkDescriptorSetLayout* set_layouts = NULL;
+    bool owns_set_layouts = false;
+    VkPushConstantRange push_constant = ZINIT;
+    bool has_push_constant = false;
+
+    VkPipelineLayoutCreateInfo layout_info = ZINIT;
+
+    has_push_constant = __lahar_shader_push_range(shader_var_count, shader_vars, &push_constant);
+
+    if (provided_sets) {
+        // Caller owns these; we only borrow them for the create call
+        set_layouts = (VkDescriptorSetLayout*)provided_sets;
+        total_sets = provided_set_count;
+    }
+    else {
+        if ((err = lahar_shader_reflect_set_layouts(shader_vars, shader_var_count, &total_sets, NULL))) {
+            goto end;
+        }
+
+        if (total_sets) {
+            set_layouts = (VkDescriptorSetLayout*)lahar_temp_alloc(total_sets * sizeof(*set_layouts));
+
+            if ((err = lahar_shader_reflect_set_layouts(shader_vars, shader_var_count, &total_sets, set_layouts))) {
+                goto end;
             }
 
-            set_bindings = (VkDescriptorSetLayoutBinding*)lahar_temp_alloc(binding_count * sizeof(*set_bindings));
-
-            if ((err = __lahar_shader_set_binding_infos(shader_var_count, shader_vars, set_number, &binding_count, set_bindings))) {
-                goto error;
-            }
-
-            VkDescriptorSetLayoutCreateInfo create_info = {
-                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                .bindingCount = binding_count,
-                .pBindings = set_bindings
-            };
-
-            if ((lahar->vkresult = vkCreateDescriptorSetLayout(lahar->device, &create_info, lahar->vkalloc, &set_layouts[set_number])) != VK_SUCCESS) {
-                err = LAHAR_ERR_VK_ERR;
-                goto error;
-            }
+            // A VkPipelineLayout does not retain its set layouts, so these are
+            // safe to destroy as soon as it is created. The caller never sees
+            // them, so they cannot allocate descriptor sets from them -- that
+            // is what set_descriptor_set_layouts() is for.
+            owns_set_layouts = true;
         }
     }
 
@@ -5693,19 +6125,21 @@ uint32_t __lahar_shader_create_layout(uint32_t shader_var_count, LaharShaderVarI
 
     if ((lahar->vkresult = vkCreatePipelineLayout(lahar->device, &layout_info, lahar->vkalloc, created)) != VK_SUCCESS) {
         err = LAHAR_ERR_VK_ERR;
-        goto error;
+        goto end;
     }
 
-error:
-    for (uint32_t i = 0; i < set_number; i++) {
-        vkDestroyDescriptorSetLayout(lahar->device, set_layouts[i], lahar->vkalloc);
+end:
+    if (owns_set_layouts) {
+        for (uint32_t i = 0; i < total_sets; i++) {
+            vkDestroyDescriptorSetLayout(lahar->device, set_layouts[i], lahar->vkalloc);
+        }
     }
 
     lahar_temp_mpop();
     return err;
 }
 
-LaharShaderCompiler* __lahar_shader_compiler_for(const char* language) {
+static LaharShaderCompiler* __lahar_shader_compiler_for(const char* language) {
     for (uint32_t i = 0; i < LAHAR_MAX_SHADER_COMPILERS; i++) {
         if (strcmp(language, lahar->shader_compilers[i].language) == 0) {
             return &lahar->shader_compilers[i];
@@ -5716,7 +6150,7 @@ LaharShaderCompiler* __lahar_shader_compiler_for(const char* language) {
 }
 
 uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, VkPipelineLayout* layout) {
-    if (!builder || ! pipeline || !layout) {
+    if (!builder || !pipeline) {
         return LAHAR_ERR_ILLEGAL_PARAMS;
     }
 
@@ -5739,6 +6173,19 @@ uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, V
     VkShaderModule modules[LAHAR_MAX_SHADER_STAGES] = ZINIT;
     VkPipelineShaderStageCreateInfo stage_infos[LAHAR_MAX_SHADER_STAGES] = ZINIT;
     uint32_t stage_index = 0;
+
+    /* How many entries step 1 actually produced in final_stages, and therefore how
+     * many may need compiler->release() during cleanup.
+     *
+     * Kept separate from stage_index on purpose. Cleanup used to reuse
+     * stage_index, but that counter is reset to 0 and re-driven by the module
+     * loop, so after a mid-loop failure in step 2 it holds the index of the
+     * FAILING module rather than the compiled count. Every stage past the failure
+     * then never got released, leaking whatever a custom compiler allocated.
+     *
+     * Declared up here with the other locals so that the goto error paths inside
+     * step 1 cannot jump over its initialization. */
+    uint32_t compiled_count = 0;
 
     // Dynamic state vars
     uint32_t dynamic_state_count = 0;
@@ -5763,8 +6210,7 @@ uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, V
     VkPipelineDepthStencilStateCreateInfo depth_stencil_info = ZINIT;
     VkPipelineLayout chosen_layout = VK_NULL_HANDLE;
 
-    const bool has_dynamic_rendering = lahar_extension_has_device(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
-    const bool wants_dynamic_rendering = has_dynamic_rendering || builder->force_dynamic;
+    const bool wants_dynamic_rendering = lahar->dynamic_rendering || builder->force_dynamic;
 
     void* final_pnext_chain = builder->pNext;
 
@@ -5818,7 +6264,9 @@ uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, V
         stage_index++;
     }
 
-    // TODO: potential leak here, figure out how to fix
+    // Step 1 is done, so stage_index is now the true count of produced stages
+    compiled_count = stage_index;
+
     stage_index = 0;
 
     // Step 2: build stage modules
@@ -6166,7 +6614,13 @@ uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, V
         chosen_layout = builder->layout;
     }
     else {
-        if ((err = __lahar_shader_create_layout(shader_var_count, shader_vars, &chosen_layout))) {
+        if ((err = __lahar_shader_create_layout(
+            shader_var_count,
+            shader_vars,
+            builder->set_layouts,
+            builder->set_layout_count,
+            &chosen_layout
+        ))) {
             goto error;
         }
 
@@ -6198,7 +6652,11 @@ uint32_t lahar_shader_build(LaharShaderBuilder* builder, VkPipeline* pipeline, V
     }
 
 error:
-    for (size_t i = 0; i < stage_index; i++) {
+    /* Two different bounds, deliberately. Compiler outputs exist for every stage
+     * step 1 produced, while modules only exist up to wherever step 2 got to.
+     * Iterating compiled_count covers both: modules beyond the failure point are
+     * still VK_NULL_HANDLE from the ZINIT and are skipped by the check. */
+    for (uint32_t i = 0; i < compiled_count; i++) {
         if (stage_compilers[i] && final_stages[i].code) {
             stage_compilers[i]->release(
                 stage_compilers[i]->user_data,
@@ -6296,15 +6754,85 @@ void lahar_shader_builder_set_vertex_input(
 }
 
 void lahar_shader_builder_set_blend_mode(LaharShaderBuilder* builder, LaharShaderBlendMode blend) {
-    if (blend == LAHAR_SBM_OPAQUE) {
-        for (uint32_t i = 0; i < sizeof(builder->blend_states) / sizeof(builder->blend_states[0]); i++) {
-            builder->blend_states[i].blendEnable = VK_FALSE;
-        }
+    VkPipelineColorBlendAttachmentState state = ZINIT;
+
+    state.colorWriteMask =
+        VK_COLOR_COMPONENT_R_BIT
+        | VK_COLOR_COMPONENT_G_BIT
+        | VK_COLOR_COMPONENT_B_BIT
+        | VK_COLOR_COMPONENT_A_BIT;
+
+    switch (blend) {
+        case LAHAR_SBM_DEFAULT:
+        case LAHAR_SBM_OPAQUE:
+            // Source replaces destination. The factors are still filled in so
+            // that flipping blendEnable on later yields straight alpha.
+            state.blendEnable = VK_FALSE;
+            state.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+            state.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            state.colorBlendOp = VK_BLEND_OP_ADD;
+            state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            state.alphaBlendOp = VK_BLEND_OP_ADD;
+            break;
+
+        case LAHAR_SBM_ALPHA:
+            // Straight (non-premultiplied) alpha. What you want for UI and
+            // sprites whose color is not already scaled by their alpha.
+            state.blendEnable = VK_TRUE;
+            state.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+            state.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            state.colorBlendOp = VK_BLEND_OP_ADD;
+            state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            state.alphaBlendOp = VK_BLEND_OP_ADD;
+            break;
+
+        case LAHAR_SBM_PREMULTIPLIED:
+            // Same result as ALPHA, but assumes rgb is already multiplied by a.
+            // Cheaper and correct under filtering/mipmapping.
+            state.blendEnable = VK_TRUE;
+            state.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+            state.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            state.colorBlendOp = VK_BLEND_OP_ADD;
+            state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            state.alphaBlendOp = VK_BLEND_OP_ADD;
+            break;
+
+        case LAHAR_SBM_ADDITIVE:
+            // Light accumulation: glows, sparks, fire. Never darkens.
+            state.blendEnable = VK_TRUE;
+            state.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+            state.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+            state.colorBlendOp = VK_BLEND_OP_ADD;
+            state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+            state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            state.alphaBlendOp = VK_BLEND_OP_ADD;
+            break;
+
+        case LAHAR_SBM_MULTIPLICATIVE:
+            // Tinting/shadowing: result = src * dst. Never brightens.
+            state.blendEnable = VK_TRUE;
+            state.srcColorBlendFactor = VK_BLEND_FACTOR_DST_COLOR;
+            state.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+            state.colorBlendOp = VK_BLEND_OP_ADD;
+            state.srcAlphaBlendFactor = VK_BLEND_FACTOR_DST_ALPHA;
+            state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+            state.alphaBlendOp = VK_BLEND_OP_ADD;
+            break;
+
+        default:
+            // Fatal in all builds: compiled out, this would silently leave the
+            // blend states unconfigured and render wrong instead of failing
+            LAHAR_FATAL_ASSERT(false && "Unknown blend mode");
+            return;
     }
-    else {
-        // Fatal in all builds: compiled out, this would silently leave the
-        // blend states unconfigured and render wrong instead of failing
-        LAHAR_FATAL_ASSERT(false && "Not yet implemented"); // TODO: non-opaque blend mode
+
+    builder->blend = blend;
+
+    for (uint32_t i = 0; i < sizeof(builder->blend_states) / sizeof(builder->blend_states[0]); i++) {
+        builder->blend_states[i] = state;
     }
 }
 
@@ -6396,6 +6924,11 @@ void lahar_shader_builder_set_layout(LaharShaderBuilder* builder, VkPipelineLayo
     builder->layout = layout;
 }
 
+void lahar_shader_builder_set_descriptor_set_layouts(LaharShaderBuilder* builder, const VkDescriptorSetLayout* layouts, uint32_t count) {
+    builder->set_layouts = layouts;
+    builder->set_layout_count = count;
+}
+
 void lahar_shader_builder_set_render_pass(LaharShaderBuilder* builder, VkRenderPass renderPass) {
     builder->renderPass = renderPass;
 }
@@ -6434,14 +6967,9 @@ void lahar_shader_builder_set_subpass(LaharShaderBuilder* builder, uint32_t subp
 
 
 
-
-
-
-
-
-
-
-
+// ============================================================================
+// Region: SPIR-V Reflection
+// ============================================================================
 
 struct LaharSPVTypeInfo;
 typedef struct LaharSPVTypeInfo LaharSPVTypeInfo;
@@ -6534,7 +7062,7 @@ struct LaharSPVDescriptorSize {
 #define LAHAR_SPV_OP_NO_LINE 317
 #define LAHAR_SPV_OP_MODULE_PROCESSED 330
 
-bool __lahar_spv_op_is_debug(uint16_t opcode) {
+static bool __lahar_spv_op_is_debug(uint16_t opcode) {
     switch (opcode) {
         case LAHAR_SPV_OP_SOURCE_CONTINUED:
         case LAHAR_SPV_OP_SOURCE:
@@ -6561,7 +7089,7 @@ bool __lahar_spv_op_is_debug(uint16_t opcode) {
 #define LAHAR_SPV_OP_DECORATE_STRING 5632
 #define LAHAR_SPV_OP_MEMBER_DECORATE_STRING 5633
 
-bool __lahar_spv_op_is_annotation(uint16_t opcode) {
+static bool __lahar_spv_op_is_annotation(uint16_t opcode) {
     switch (opcode) {
         case LAHAR_SPV_OP_DECORATE:
         case LAHAR_SPV_OP_MEMBER_DECORATE:
@@ -6584,7 +7112,7 @@ bool __lahar_spv_op_is_annotation(uint16_t opcode) {
 #define LAHAR_SPV_OP_EXT_INST_WITH_FORWARD_REFS_KHR 4433
 #define LAHAR_SPV_OP_CONDITIONAL_EXTENSION_INTEL 6248
 
-bool __lahar_spv_op_is_extension(uint16_t opcode) {
+static bool __lahar_spv_op_is_extension(uint16_t opcode) {
     switch (opcode) {
         case LAHAR_SPV_OP_EXTENSION:
         case LAHAR_SPV_OP_EXT_INST_IMPORT:
@@ -6607,7 +7135,7 @@ bool __lahar_spv_op_is_extension(uint16_t opcode) {
 #define LAHAR_SPV_OP_CONDITIONAL_ENTRY_POINT_INTEL 6249
 #define LAHAR_SPV_OP_CONDITIONAL_CAPABILITY 6250
 
-bool __lahar_spv_op_is_mode_setting(uint16_t opcode) {
+static bool __lahar_spv_op_is_mode_setting(uint16_t opcode) {
     switch (opcode) {
         case LAHAR_SPV_OP_MEMORY_MODEL:
         case LAHAR_SPV_OP_ENTRY_POINT:
@@ -6661,7 +7189,7 @@ bool __lahar_spv_op_is_mode_setting(uint16_t opcode) {
 #define LAHAR_SPV_OP_TYPE_STRUCT_CONTINUED 6090
 #define LAHAR_SPV_OP_TYPE_TASK_SEQUENCE_INTEL 6199
 
-bool __lahar_spv_op_is_type_declaration(uint16_t opcode) {
+static bool __lahar_spv_op_is_type_declaration(uint16_t opcode) {
     switch (opcode) {
         case LAHAR_SPV_OP_TYPE_VOID:
         case LAHAR_SPV_OP_TYPE_BOOL:
@@ -6734,7 +7262,7 @@ bool __lahar_spv_op_is_type_declaration(uint16_t opcode) {
 // takes a module, some id or short list of ids, and returns a simple piece
 // of data about that id, usually with a simple linear scan of a section
 
-bool __lahar_spv_v1_var_lookup_is_builtin(const LaharSPVInfo* info, uint32_t var_id) {
+static bool __lahar_spv_v1_var_lookup_is_builtin(const LaharSPVInfo* info, uint32_t var_id) {
     LAHAR_ASSERT(info);
 
     const uint32_t* code = (const uint32_t*)info->stage->code;
@@ -6762,7 +7290,7 @@ bool __lahar_spv_v1_var_lookup_is_builtin(const LaharSPVInfo* info, uint32_t var
     return false;
 }
 
-bool __lahar_spv_v1_lookup_is_bufferblock(const LaharSPVInfo* info, uint32_t type_id) {
+static bool __lahar_spv_v1_lookup_is_bufferblock(const LaharSPVInfo* info, uint32_t type_id) {
     LAHAR_ASSERT(info);
 
     const uint32_t* code = (const uint32_t*)info->stage->code;
@@ -6790,7 +7318,7 @@ bool __lahar_spv_v1_lookup_is_bufferblock(const LaharSPVInfo* info, uint32_t typ
     return false;
 }
 
-uint32_t __lahar_spv_v1_lookup_input_location(const LaharSPVInfo* info, uint32_t input_id, uint32_t* location) {
+static uint32_t __lahar_spv_v1_lookup_input_location(const LaharSPVInfo* info, uint32_t input_id, uint32_t* location) {
     LAHAR_ASSERT(info && location);
 
     const uint32_t* code = (const uint32_t*)info->stage->code;
@@ -6823,7 +7351,7 @@ uint32_t __lahar_spv_v1_lookup_input_location(const LaharSPVInfo* info, uint32_t
     return LAHAR_ERR_ID_NOT_FOUND;
 }
 
-uint32_t __lahar_spv_v1_lookup_type_array_stride(const LaharSPVInfo* info, uint32_t type_id, uint32_t* stride_out) {
+static uint32_t __lahar_spv_v1_lookup_type_array_stride(const LaharSPVInfo* info, uint32_t type_id, uint32_t* stride_out) {
     LAHAR_ASSERT(info && stride_out);
 
     const uint32_t* code = (const uint32_t*)info->stage->code;
@@ -6849,7 +7377,7 @@ uint32_t __lahar_spv_v1_lookup_type_array_stride(const LaharSPVInfo* info, uint3
     return LAHAR_ERR_ID_NOT_FOUND;
 }
 
-const char* __lahar_spv_v1_lookup_id_name(const LaharSPVInfo* info, uint32_t var_id) {
+static const char* __lahar_spv_v1_lookup_id_name(const LaharSPVInfo* info, uint32_t var_id) {
     if (info->section_offsets.debug == UINT32_MAX) {
         return NULL;
     }
@@ -6875,7 +7403,7 @@ const char* __lahar_spv_v1_lookup_id_name(const LaharSPVInfo* info, uint32_t var
     return NULL;
 }
 
-uint32_t __lahar_spv_v1_lookup_set_binding(const LaharSPVInfo* info, uint32_t var_id, uint32_t* set_out, uint32_t* binding_out) {
+static uint32_t __lahar_spv_v1_lookup_set_binding(const LaharSPVInfo* info, uint32_t var_id, uint32_t* set_out, uint32_t* binding_out) {
     LAHAR_ASSERT(info && set_out && binding_out);
 
     const uint32_t* code = (const uint32_t*)info->stage->code;
@@ -6925,7 +7453,7 @@ uint32_t __lahar_spv_v1_lookup_set_binding(const LaharSPVInfo* info, uint32_t va
     return LAHAR_ERR_SUCCESS;
 }
 
-uint32_t __lahar_spv_v1_lookup_member_offset(const LaharSPVInfo* info, uint32_t struct_type_id, uint32_t member_index, uint32_t* offset_out) {
+static uint32_t __lahar_spv_v1_lookup_member_offset(const LaharSPVInfo* info, uint32_t struct_type_id, uint32_t member_index, uint32_t* offset_out) {
     LAHAR_ASSERT(info && offset_out);
 
     const uint32_t* code = (const uint32_t*)info->stage->code;
@@ -6956,7 +7484,7 @@ uint32_t __lahar_spv_v1_lookup_member_offset(const LaharSPVInfo* info, uint32_t 
     return LAHAR_ERR_ID_NOT_FOUND;
 }
 
-uint32_t __lahar_spv_v1_lookup_member_matrix_stride(const LaharSPVInfo* info, uint32_t struct_type_id, uint32_t member_index, uint32_t* stride_out) {
+static uint32_t __lahar_spv_v1_lookup_member_matrix_stride(const LaharSPVInfo* info, uint32_t struct_type_id, uint32_t member_index, uint32_t* stride_out) {
     LAHAR_ASSERT(info && stride_out);
 
     const uint32_t* code = (const uint32_t*)info->stage->code;
@@ -6987,7 +7515,7 @@ uint32_t __lahar_spv_v1_lookup_member_matrix_stride(const LaharSPVInfo* info, ui
     return LAHAR_ERR_ID_NOT_FOUND;
 }
 
-const char* __lahar_spv_v1_lookup_member_name(const LaharSPVInfo* info, uint32_t struct_type, uint32_t member_index) {
+static const char* __lahar_spv_v1_lookup_member_name(const LaharSPVInfo* info, uint32_t struct_type, uint32_t member_index) {
     LAHAR_ASSERT(info);
 
     if (info->section_offsets.debug == UINT32_MAX) {
@@ -7017,7 +7545,7 @@ const char* __lahar_spv_v1_lookup_member_name(const LaharSPVInfo* info, uint32_t
     return NULL;
 }
 
-uint32_t __lahar_spv_v1_lookup_constant(const LaharSPVInfo* info, uint32_t constant_id, uint32_t* value_out) {
+static uint32_t __lahar_spv_v1_lookup_constant(const LaharSPVInfo* info, uint32_t constant_id, uint32_t* value_out) {
     LAHAR_ASSERT(info && value_out);
 
     const uint32_t* code = (const uint32_t*)info->stage->code;
@@ -7052,7 +7580,7 @@ uint32_t __lahar_spv_v1_lookup_constant(const LaharSPVInfo* info, uint32_t const
 /** Auto-derefences pointer types. So for example, if a descriptor is of type
  * Uniform Struct*, you'll get Struct out as your type.
  */
-LaharSPVTypeInfo* __lahar_spv_get_type(const LaharSPVInfo* info, uint32_t id) {
+static LaharSPVTypeInfo* __lahar_spv_get_type(const LaharSPVInfo* info, uint32_t id) {
     for (uint32_t i = 0; i < info->type_count; i++) {
         if (info->type_table[i].id == id) {
 
@@ -7069,7 +7597,7 @@ LaharSPVTypeInfo* __lahar_spv_get_type(const LaharSPVInfo* info, uint32_t id) {
     return NULL;
 }
 
-bool __lahar_spv_type_is_matrix(const LaharSPVTypeInfo* type) {
+static bool __lahar_spv_type_is_matrix(const LaharSPVTypeInfo* type) {
     switch(type->type) {
         case LAHAR_SVT_MAT2X3:
         case LAHAR_SVT_MAT2X4:
@@ -7094,7 +7622,7 @@ bool __lahar_spv_type_is_matrix(const LaharSPVTypeInfo* type) {
     }
 }
 
-uint32_t __lahar_spv_type_size_recurse(
+static uint32_t __lahar_spv_type_size_recurse(
     const LaharSPVInfo* info,
     const LaharSPVTypeInfo* type,
     const LaharSPVMemberInfo* member_info,
@@ -7187,13 +7715,13 @@ uint32_t __lahar_spv_type_size_recurse(
 }
 
 /** Get the logical size of a type, other than include_padding causes matrix types to include their padding */
-uint32_t __lahar_spv_type_size(const LaharSPVInfo* info, const LaharSPVTypeInfo* type, bool include_padding) {
+static uint32_t __lahar_spv_type_size(const LaharSPVInfo* info, const LaharSPVTypeInfo* type, bool include_padding) {
     LAHAR_ASSERT(!__lahar_spv_type_is_matrix(type));
     return __lahar_spv_type_size_recurse(info, type, NULL, include_padding);
 }
 
 /** Matrices can only be described as having a size in the context of a struct, so a member info must be supplied */
-uint32_t __lahar_spv_matrix_type_size(const LaharSPVInfo* info, const LaharSPVTypeInfo* type, const LaharSPVMemberInfo* member_info, bool include_padding) {
+static uint32_t __lahar_spv_matrix_type_size(const LaharSPVInfo* info, const LaharSPVTypeInfo* type, const LaharSPVMemberInfo* member_info, bool include_padding) {
     LAHAR_ASSERT(__lahar_spv_type_is_matrix(type));
     return __lahar_spv_type_size_recurse(info, type, member_info, include_padding);
 }
@@ -7211,7 +7739,7 @@ uint32_t __lahar_spv_matrix_type_size(const LaharSPVInfo* info, const LaharSPVTy
 
 
 
-uint32_t __lahar_shader_stage_validate_spv_header(const uint32_t* spv) {
+static uint32_t __lahar_shader_stage_validate_spv_header(const uint32_t* spv) {
     const uint32_t magic = 0x07230203;
 
     if (spv[0] != magic) {
@@ -7291,7 +7819,7 @@ uint32_t __lahar_shader_stage_validate_spv_header(const uint32_t* spv) {
     return LAHAR_ERR_SUCCESS;
 }
 
-uint32_t __lahar_spv_v1_build_section_offsets(LaharSPVInfo* info) {
+static uint32_t __lahar_spv_v1_build_section_offsets(LaharSPVInfo* info) {
     const uint32_t* code = (const uint32_t*)info->stage->code;
     const uint64_t words = info->stage->length / 4;
 
@@ -7378,31 +7906,7 @@ uint32_t __lahar_spv_v1_build_section_offsets(LaharSPVInfo* info) {
     return phase == 6 ? LAHAR_ERR_SUCCESS : LAHAR_ERR_MALFORMED_CODE;
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-uint32_t __lahar_spv_v1_count_types(LaharSPVInfo* info) {
+static uint32_t __lahar_spv_v1_count_types(LaharSPVInfo* info) {
     LAHAR_ASSERT(info);
 
     const LaharShaderStage* stage = info->stage;
@@ -7433,7 +7937,7 @@ uint32_t __lahar_spv_v1_count_types(LaharSPVInfo* info) {
 
 
 
-uint32_t __lahar_spv_v1_extract_types(LaharSPVInfo* info) {
+static uint32_t __lahar_spv_v1_extract_types(LaharSPVInfo* info) {
     LAHAR_ASSERT(info);
 
     const LaharShaderStage* stage = info->stage;
@@ -7745,7 +8249,7 @@ uint32_t __lahar_spv_v1_extract_types(LaharSPVInfo* info) {
  * It uses temp_alloc oddly to achieve this, using it to grow
  * the last allocation in place
  */
-uint32_t __lahar_spv_v1_count_unique_descriptor_slots(
+static uint32_t __lahar_spv_v1_count_unique_descriptor_slots(
     LaharSPVInfo* info,
     uint32_t* slots_out,
     LaharSPVDescriptorSize** unique_set_bindings_out
@@ -7845,8 +8349,7 @@ uint32_t __lahar_spv_v1_count_unique_descriptor_slots(
     return LAHAR_ERR_SUCCESS;
 }
 
-
-void __lahar_spv_v1_count_input_slots(const LaharSPVInfo* info, uint32_t* count_out) {
+static void __lahar_spv_v1_count_input_slots(const LaharSPVInfo* info, uint32_t* count_out) {
     LAHAR_ASSERT(info && count_out);
 
     *count_out = 0;
@@ -7874,7 +8377,7 @@ void __lahar_spv_v1_count_input_slots(const LaharSPVInfo* info, uint32_t* count_
     }
 }
 
-uint32_t __lahar_spv_v1_count_push_contant_slots(LaharSPVInfo* info, uint32_t* count_out, bool* saw) {
+static uint32_t __lahar_spv_v1_count_push_contant_slots(LaharSPVInfo* info, uint32_t* count_out, bool* saw) {
     LAHAR_ASSERT(info && count_out && saw);
 
     *count_out = 0;
@@ -7912,9 +8415,7 @@ uint32_t __lahar_spv_v1_count_push_contant_slots(LaharSPVInfo* info, uint32_t* c
     return LAHAR_ERR_SUCCESS;
 }
 
-
-
-uint32_t __lahar_spv_v1_extract_inputs(const LaharSPVInfo* info, LaharShaderVarInfo* vars, uint32_t* var_count) {
+static uint32_t __lahar_spv_v1_extract_inputs(const LaharSPVInfo* info, LaharShaderVarInfo* vars, uint32_t* var_count) {
     LAHAR_ASSERT(info && vars && var_count);
 
     uint32_t err;
@@ -7969,9 +8470,7 @@ uint32_t __lahar_spv_v1_extract_inputs(const LaharSPVInfo* info, LaharShaderVarI
     return LAHAR_ERR_SUCCESS;
 }
 
-
-
-uint32_t __lahar_spv_v1_extract_subvars(
+static uint32_t __lahar_spv_v1_extract_subvars(
     LaharSPVInfo* info,
     const LaharSPVTypeInfo* type_info,
     const LaharSPVMemberInfo* member_info,
@@ -8127,7 +8626,7 @@ uint32_t __lahar_spv_v1_extract_subvars(
     return LAHAR_ERR_SUCCESS;
 }
 
-uint32_t __lahar_spv_v1_extract_descriptors(LaharSPVInfo* info, LaharShaderVarInfo* vars, uint32_t* var_count) {
+static uint32_t __lahar_spv_v1_extract_descriptors(LaharSPVInfo* info, LaharShaderVarInfo* vars, uint32_t* var_count) {
     uint32_t err = LAHAR_ERR_SUCCESS;
     const uint32_t* code = (const uint32_t*)info->stage->code;
 
@@ -8249,8 +8748,7 @@ uint32_t __lahar_spv_v1_extract_descriptors(LaharSPVInfo* info, LaharShaderVarIn
     return LAHAR_ERR_SUCCESS;
 }
 
-
-uint32_t __lahar_spv_v1_extract_push_block(LaharSPVInfo* info, LaharShaderVarInfo* vars, uint32_t* var_count) {
+static uint32_t __lahar_spv_v1_extract_push_block(LaharSPVInfo* info, LaharShaderVarInfo* vars, uint32_t* var_count) {
     uint32_t err = LAHAR_ERR_SUCCESS;
     const uint32_t* code = (const uint32_t*)info->stage->code;
 
@@ -8312,12 +8810,7 @@ uint32_t __lahar_spv_v1_extract_push_block(LaharSPVInfo* info, LaharShaderVarInf
     return LAHAR_ERR_SUCCESS;
 }
 
-
-
-
-
-
-const char* __lahar_shader_stage_name(const LaharShaderStage* stage) {
+static const char* __lahar_shader_stage_name(const LaharShaderStage* stage) {
     const char* stage_name = "Unknown or mixed";
 
     switch(stage->stage) {
@@ -8333,7 +8826,7 @@ const char* __lahar_shader_stage_name(const LaharShaderStage* stage) {
     return stage_name;
 }
 
-void __lahar_shader_introspection_print_recurse(const LaharShaderVarInfo* infos, uint32_t count, uint32_t index, uint32_t depth) {
+static void __lahar_shader_introspection_print_recurse(const LaharShaderVarInfo* infos, uint32_t count, uint32_t index, uint32_t depth) {
     const LaharShaderVarInfo* info = &infos[index];
     const char* type_name = lahar_shader_var_type_string(info->type);
 
@@ -8457,6 +8950,7 @@ uint32_t lahar_shader_introspect(
     LaharSPVDescriptorSize* unique_descriptors = NULL;
 
     uint32_t push_block_stage = UINT32_MAX;
+    uint32_t push_block_stages = 0;     // union of the stages that declare a push block
 
     uint32_t total_slots = 0;
 
@@ -8529,16 +9023,30 @@ uint32_t lahar_shader_introspect(
             goto cleanup;
         }
 
-        if (push_block_stage == UINT32_MAX) {
+        // Every stage has to be scanned, not just the first one that has a
+        // block: a block read by both vertex and fragment needs a range whose
+        // stageFlags covers both, or vkCmdPushConstants trips validation.
+        {
             bool saw = false;
+            uint32_t stage_push_slots = 0;
 
-            if ((err = __lahar_spv_v1_count_push_contant_slots(info, &push_slot_count, &saw))) {
+            if ((err = __lahar_spv_v1_count_push_contant_slots(info, &stage_push_slots, &saw))) {
                 lahar_trace("Failed to count push block slots");
                 goto cleanup;
             }
 
             if (saw) {
-                push_block_stage = i;
+                push_block_stages |= (uint32_t)info->stage->stage;
+
+                // Only one block is ever emitted, so reserve room for the
+                // largest one seen in case the stages disagree in shape.
+                if (stage_push_slots > push_slot_count) {
+                    push_slot_count = stage_push_slots;
+                    push_block_stage = i;
+                }
+                else if (push_block_stage == UINT32_MAX) {
+                    push_block_stage = i;
+                }
             }
         }
     }
@@ -8584,10 +9092,21 @@ uint32_t lahar_shader_introspect(
 
     if (push_block_stage != UINT32_MAX) {
         LaharSPVInfo* info = &stage_infos[push_block_stage];
+        const uint32_t first = produced_info_count;
 
         if ((err = __lahar_spv_v1_extract_push_block(info, infos, &produced_info_count))) {
             lahar_trace("Failed to extract push descriptor block");
             goto cleanup;
+        }
+
+        // Retag the block (and its whole subtree) with every stage that reads
+        // it, so the generated push constant range covers them all.
+        for (uint32_t i = first; i < produced_info_count; i++) {
+            #ifdef __cplusplus
+            infos[i].stages = (VkShaderStageFlagBits)push_block_stages;
+            #else
+            infos[i].stages = push_block_stages;
+            #endif
         }
     }
 
@@ -8596,15 +9115,11 @@ uint32_t lahar_shader_introspect(
     }
 
 cleanup:
-    // Postmortem count/fill divergence detector. Fatal-tier: user-supplied
-    // SPIR-V feeds both passes, and if they disagree the writes above already
-    // overran the arena -- crash loudly in every build rather than corrupt.
     LAHAR_FATAL_ASSERT(produced_info_count <= total_slots); // Very bad memory nono
 
     lahar_temp_mpop();
     return err;
 }
-
 
 const char* lahar_shader_var_type_string(LaharShaderVarType svt) {
     switch (svt) {
@@ -8935,15 +9450,9 @@ const char* lahar_vkformat_string(VkFormat format) {
 
 
 
-
-
-
-
-
-
-
-
-
+// ============================================================================
+// Region: Allocator
+// ============================================================================
 
 
 
@@ -9562,7 +10071,7 @@ static void __lahar_fl_free_memchunk(LaharFreelistAllocator* self, LaharFreelist
 // Owns the reclaim policy: currently eager, so a chunk whose last resident
 // leaves is freed immediately (dedicated chunks trivially so).
 //
-// This is the *should* be the only decrement of live_count, and __lahar_fl_suballoc
+// This *should* be the only decrement of live_count, and __lahar_fl_suballoc
 // the only increment.
 static void __lahar_fl_suballoc_release(
     LaharFreelistAllocator* self,
@@ -10556,6 +11065,183 @@ void lahar_allocator_freelist_deinit(LaharAllocator* allocator) {
 
 
 
+
+
+
+
+
+/* ============================================================================
+ * GPU Memory
+ * ============================================================================
+ * Dispatch layer over lahar->gpu_allocator. Deliberately dumb: the only logic
+ * here is argument validation and the map/copy/flush/unmap sequencing, so that
+ * there is exactly one place that knows how to drive the vtable.
+ */
+
+/* Util: fetch the active allocator, or NULL if lahar has not been built */
+static LaharAllocator* __lahar_allocator(void) {
+    if (!lahar->gpu_allocator) {
+        lahar_error("No GPU allocator: lahar_build() has not run, or it failed");
+        return NULL;
+    }
+
+    return lahar->gpu_allocator;
+}
+
+uint32_t lahar_buffer_create(
+    const VkBufferCreateInfo* info,
+    const LaharAllocationCreateInfo* alloc_info,
+    VkBuffer* buffer_out,
+    LaharAllocation* alloc_out
+) {
+    if (!info || !alloc_info || !buffer_out || !alloc_out) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+    LaharAllocator* alloc = __lahar_allocator();
+    if (!alloc) { return LAHAR_ERR_INVALID_STATE; }
+
+    return alloc->alloc_buffer(alloc, info, alloc_info, buffer_out, alloc_out);
+}
+
+uint32_t lahar_buffer_create_simple(
+    uint64_t size,
+    VkBufferUsageFlags usage,
+    LaharMemoryUsage mem_usage,
+    LaharAllocationRole role,
+    VkBuffer* buffer_out,
+    LaharAllocation* alloc_out
+) {
+    if (!size) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+    VkBufferCreateInfo info = ZINIT;
+    info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    info.size = size;
+    info.usage = usage;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    LaharAllocationCreateInfo alloc_info = ZINIT;
+    alloc_info.usage = mem_usage;
+    alloc_info.role = role;
+
+    return lahar_buffer_create(&info, &alloc_info, buffer_out, alloc_out);
+}
+
+uint32_t lahar_buffer_destroy(VkBuffer buffer, LaharAllocation alloc_handle) {
+    // Tolerate the null case so teardown paths do not need a guard per resource
+    if (buffer == VK_NULL_HANDLE && !alloc_handle) { return LAHAR_ERR_SUCCESS; }
+    if (buffer == VK_NULL_HANDLE || !alloc_handle) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+    LaharAllocator* alloc = __lahar_allocator();
+    if (!alloc) { return LAHAR_ERR_INVALID_STATE; }
+
+    return alloc->free_buffer(alloc, buffer, alloc_handle);
+}
+
+uint32_t lahar_image_create(
+    const VkImageCreateInfo* info,
+    const LaharAllocationCreateInfo* alloc_info,
+    VkImage* image_out,
+    LaharAllocation* alloc_out
+) {
+    if (!info || !alloc_info || !image_out || !alloc_out) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+    LaharAllocator* alloc = __lahar_allocator();
+    if (!alloc) { return LAHAR_ERR_INVALID_STATE; }
+
+    return alloc->alloc_image(alloc, info, alloc_info, image_out, alloc_out);
+}
+
+uint32_t lahar_image_destroy(VkImage image, LaharAllocation alloc_handle) {
+    if (image == VK_NULL_HANDLE && !alloc_handle) { return LAHAR_ERR_SUCCESS; }
+    if (image == VK_NULL_HANDLE || !alloc_handle) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+    LaharAllocator* alloc = __lahar_allocator();
+    if (!alloc) { return LAHAR_ERR_INVALID_STATE; }
+
+    return alloc->free_image(alloc, image, alloc_handle);
+}
+
+uint32_t lahar_memory_map(LaharAllocation alloc_handle, void** out) {
+    if (!alloc_handle || !out) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+    LaharAllocator* alloc = __lahar_allocator();
+    if (!alloc) { return LAHAR_ERR_INVALID_STATE; }
+
+    return alloc->map(alloc, alloc_handle, out);
+}
+
+uint32_t lahar_memory_unmap(LaharAllocation alloc_handle) {
+    if (!alloc_handle) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+    LaharAllocator* alloc = __lahar_allocator();
+    if (!alloc) { return LAHAR_ERR_INVALID_STATE; }
+
+    return alloc->unmap(alloc, alloc_handle);
+}
+
+uint32_t lahar_memory_flush(LaharAllocation alloc_handle, uint64_t offset, uint64_t size) {
+    if (!alloc_handle) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+    LaharAllocator* alloc = __lahar_allocator();
+    if (!alloc) { return LAHAR_ERR_INVALID_STATE; }
+
+    return alloc->flush(alloc, alloc_handle, offset, size);
+}
+
+uint32_t lahar_memory_invalidate(LaharAllocation alloc_handle, uint64_t offset, uint64_t size) {
+    if (!alloc_handle) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+
+    LaharAllocator* alloc = __lahar_allocator();
+    if (!alloc) { return LAHAR_ERR_INVALID_STATE; }
+
+    return alloc->invalidate(alloc, alloc_handle, offset, size);
+}
+
+uint32_t lahar_memory_write(LaharAllocation alloc_handle, uint64_t offset, const void* data, uint64_t size) {
+    if (!alloc_handle || !data) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+    if (!size) { return LAHAR_ERR_SUCCESS; }
+
+    LaharAllocator* alloc = __lahar_allocator();
+    if (!alloc) { return LAHAR_ERR_INVALID_STATE; }
+
+    uint32_t err = LAHAR_ERR_SUCCESS;
+    void* mapped = NULL;
+
+    if ((err = alloc->map(alloc, alloc_handle, &mapped))) { return err; }
+
+    memcpy((uint8_t*)mapped + offset, data, (size_t)size);
+
+    // Flush before unmapping: unmap may drop the mapping entirely, and the write
+    // is only guaranteed visible to the device once flushed.
+    err = alloc->flush(alloc, alloc_handle, offset, size);
+
+    const uint32_t unmap_err = alloc->unmap(alloc, alloc_handle);
+
+    // The flush failure is the interesting one, so it wins if both fail
+    return err ? err : unmap_err;
+}
+
+uint32_t lahar_memory_read(LaharAllocation alloc_handle, uint64_t offset, void* data, uint64_t size) {
+    if (!alloc_handle || !data) { return LAHAR_ERR_ILLEGAL_PARAMS; }
+    if (!size) { return LAHAR_ERR_SUCCESS; }
+
+    LaharAllocator* alloc = __lahar_allocator();
+    if (!alloc) { return LAHAR_ERR_INVALID_STATE; }
+
+    uint32_t err = LAHAR_ERR_SUCCESS;
+    void* mapped = NULL;
+
+    if ((err = alloc->map(alloc, alloc_handle, &mapped))) { return err; }
+
+    // Invalidate first, so what we copy reflects any device writes
+    if ((err = alloc->invalidate(alloc, alloc_handle, offset, size))) {
+        alloc->unmap(alloc, alloc_handle);
+        return err;
+    }
+
+    memcpy(data, (const uint8_t*)mapped + offset, (size_t)size);
+
+    return alloc->unmap(alloc, alloc_handle);
+}
 
 
 
