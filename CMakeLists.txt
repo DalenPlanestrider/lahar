@@ -9,6 +9,7 @@ project(lahar)
 add_executable(lahar main.c)
 target_link_libraries(lahar glfw)
 target_include_directories(lahar SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(lahar PRIVATE LAHAR_DEBUG)
 
 target_compile_options(lahar PRIVATE -Wall -Wextra -Werror 
     -Wconversion -Wsign-conversion -Wshadow -Wformat=2
@@ -21,14 +22,14 @@ target_compile_options(lahar PRIVATE -Wall -Wextra -Werror
 # tests locate test/shader regardless of the working directory they run in.
 add_executable(tests ${CMAKE_CURRENT_SOURCE_DIR}/test/tests.c)
 target_include_directories(tests SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_definitions(tests PRIVATE LAHAR_WINDOW_WARN_OK)
+target_compile_definitions(tests PRIVATE LAHAR_WINDOW_WARN_OK LAHAR_DEBUG)
 
 add_executable(cycle_tests ${CMAKE_CURRENT_SOURCE_DIR}/test/cycle.c)
 target_link_libraries(cycle_tests glfw)
 target_include_directories(cycle_tests SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_definitions(cycle_tests PRIVATE LAHAR_WINDOW_WARN_OK)
+target_compile_definitions(cycle_tests PRIVATE LAHAR_WINDOW_WARN_OK LAHAR_DEBUG)
 
 add_executable(allocator_tests test/allocator.cpp)
 target_include_directories(allocator_tests SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} test)
 target_link_libraries(allocator_tests dl)
-target_compile_definitions(allocator_tests PRIVATE LAHAR_WINDOW_WARN_OK)
+target_compile_definitions(allocator_tests PRIVATE LAHAR_WINDOW_WARN_OK LAHAR_DEBUG)

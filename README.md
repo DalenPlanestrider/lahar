@@ -60,6 +60,7 @@ cases that Lahar does not handle automatically.
 * Simplifying or hiding Vulkan concepts.
 * CPU-side synchronization.
 
+
 ## Installation
 Lahar is header-only. Simply include `lahar.h` and define `LAHAR_IMPLEMENTATION`
 in exactly one source file before the include.
@@ -346,6 +347,37 @@ void sleep_ns(uint64_t ns) {
     nanosleep(&ts, NULL);
 }
 ```
+
+## Extension Awareness
+Lahar never enables an extension you didn't request. But when you *do*
+request certain extensions (via `lahar_builder_extension_add_required_device`
+or the optional-extension variant), Lahar recognizes them and adapts its own
+behavior:
+
+* **`VK_KHR_dynamic_rendering`** — Lahar chains the feature struct into device
+  creation for you (unless you supplied one yourself, in which case your
+  feature bit is respected). The resolved state lands in
+  `lahar->dynamic_rendering`, which also accounts for the 1.3 core feature
+  path, and gates utilities like `lahar_cmd_begin_rendering` and the pipeline
+  builder's rendering-info handling.
+* **`VK_EXT_swapchain_maintenance1`** (or the KHR promotion) — same feature
+  struct treatment, resolved into `lahar->swapchain_maintenance1`. When
+  enabled, Lahar attaches present fences and uses them to reclaim retired
+  swapchains (e.g. after a resize with queued destruction) without any queue
+  waits; without it, reclamation falls back to a brief present-queue idle.
+* **`VK_EXT_extended_dynamic_state` 1/2/3** — adjusts what the pipeline
+  builder can make dynamic. Most `LAHAR_SDF_*` flags are core 1.0 states and
+  always work; `LAHAR_SDF_CULL` needs extension 1 (or 1.3 core) and fails
+  with `LAHAR_ERR_MISSING_EXTENSION` without it. The `all_dynamic` builder
+  flag ("make the whole pipeline dynamic") includes every state each enabled
+  tier provides, extension 1 counting as present on 1.3 core.
+* **`VK_KHR_get_memory_requirements2` + `VK_KHR_dedicated_allocation`** — the
+  built-in freelist allocator uses them to honor dedicated-allocation
+  requirements when both are enabled.
+
+In all cases the pattern is the same: requesting the extension through Lahar's
+builder is the opt-in, and anything Lahar derives from it is readable off the
+global state after `lahar_build`.
 
 ## Documentation
 The authoritative source of Lahar's documentation is the header itself. See the

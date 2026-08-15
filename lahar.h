@@ -214,6 +214,10 @@ Compile-Time Configuration options:
     #define LAHAR_MAX_SHADER_COMPILERS 4
 #endif
 
+#ifndef LAHAR_MAX_WINDOW_RETIRES
+    #define LAHAR_MAX_WINDOW_RETIRES 8
+#endif
+
 #define LAHAR_ERR_SUCCESS 0                             // All good in the neighborhood
 #define LAHAR_ERR_ILLEGAL_PARAMS 0x00020001             // Wrong stuff for this function
 #define LAHAR_ERR_LOAD_FAILURE 0x00020002               // We couldn't load vulkan
@@ -476,12 +480,15 @@ struct LaharAttachment {
 
 struct LaharWindowState {
     LaharWindow* window;                    // The window
-    uint32_t width, height;                 // The width and height
+    uint64_t index;                         // The window's index
+    uint32_t width, height;                 // The width and height, in windowing system units
+    VkExtent2D extent;                      // The swapchain's extent
     uint32_t desired_img_count;             // The desired number of images in the swapchain
     uint32_t max_in_flight;                 // The max number of images in flight
     LaharFramePhase frame_phase;            // Used to track where we are in the phase, making it so you can submit multiple times before swap
     VkCompositeAlphaFlagBitsKHR alpha;      // The compositing alpha flags
     bool auto_recreate_swap;                // Automatically recreate the swapchain
+    bool queued_destruction;                // Queue destruction on resize instead of halt-the-world
     LaharSurfaceResizeFunc resize_callback; // An optional callback to handle surface resizes
 
     VkSurfaceFormatKHR surface_format;      // The selected surface format
@@ -495,6 +502,8 @@ struct LaharWindowState {
     VkSemaphore* render_finished;           // The sync semaphores for rendering being complete
     uint32_t in_flight_size;
     VkFence* in_flight;                     // The fences for if this frame is in flight
+    uint32_t present_fences_size;
+    VkFence* present_fences;                // Per swapchain image; signaled when its last present retired. Only attached to presents when swapchain_maintenance1 is enabled, otherwise created signaled and left alone
 
     uint32_t flight_index;                  // The logical index of the frame in flight. Use this to index sync primitives, or anything "per frame in flight"
     uint32_t frame_index;                   // The index of the current swapchain image, set by window_frame_begin
@@ -503,6 +512,7 @@ struct LaharWindowState {
     LaharAttachmentConfig* attachment_configs;  // The configurations for the attachments, in order of [ATTACHMENT_TYPE]
     LaharAttachment** attachments;              // Attachments are in a 2D array, of [ATTACHMENT_TYPE][FRAME_INDEX]
 
+    VkCommandPool pool;                     // Will be null unless specifically requested
     VkCommandBuffer* commands;              // Will be null unless specifically requested
 };
 
@@ -525,6 +535,7 @@ struct Lahar {
     bool wantvalidation;                                    // True if validation layers were requested
     bool wantcommands;                                      // True if the window command buffers were requested
     bool dynamic_rendering;                                 // True if dynamic rendering is available AND enabled, whether via the extension or 1.3 core. Only valid after build
+    bool swapchain_maintenance1;                            // True if the swapchain_maintenance1 feature is enabled (extension + feature bit). Only valid after build
     VkAllocationCallbacks* vkalloc;                         // One can set the vulkan CPU allocator, if one desires
     PFN_vkDebugUtilsMessengerCallbackEXT debug_callback;    // One can set the debug messenger callback, if one desires
     void* user_data;                                        // A user supplied pointer
@@ -537,6 +548,8 @@ struct Lahar {
     LaharSurfaceFormatChooseFunc format_chooser;            // An optional custom callback to choose the surface format
     LaharSurfacePresentModeChooseFunc present_chooser;      // An optional custom callback to choose the surface present mode
     LaharShaderCompiler shader_compilers[LAHAR_MAX_SHADER_COMPILERS];
+    LaharWindowState window_retire_queue[LAHAR_MAX_WINDOW_RETIRES];
+    uint32_t window_retire_count;
 
     /* Useful Vulkan variables */
 
@@ -546,7 +559,6 @@ struct Lahar {
     VkDevice device;
     VkQueue graphicsQueue;
     VkQueue presentQueue;
-    VkCommandPool pool;                                     // Will be null unless specifically requested
 
     LaharWindowState* windows;
     size_t window_count, window_cap;
@@ -1518,7 +1530,7 @@ uint32_t lahar_memory_read(LaharAllocation alloc, uint64_t offset, void* data, u
 
 extern Lahar __lahar_instance;
 extern Lahar* lahar;
-#define LAHAR_VERSION VK_MAKE_VERSION(4, 1, 0)
+#define LAHAR_VERSION VK_MAKE_VERSION(4, 2, 0)
 
 #if defined(__cplusplus) && defined(LAHAR_C_LINKAGE)
 }
@@ -2752,7 +2764,6 @@ extern PFN_vkAcquireNextImage2KHR vkAcquireNextImage2KHR;
 
 #endif //LAHAR_H
 
-#define LAHAR_IMPLEMENTATION
 #if defined(LAHAR_IMPLEMENTATION) && !defined(LAHAR_IMPLEMENTATION_INCLUDED)
 #define LAHAR_IMPLEMENTATION_INCLUDED
 
@@ -3037,6 +3048,69 @@ static void __lahar_error(const char* msg, ...) {
 
 #endif
 
+static uint32_t lahar_load_loader(LaharLoaderFunc loadfn);
+static uint32_t lahar_load_instance(LaharLoaderFunc loadfn);
+static uint32_t lahar_load_device(LaharLoaderFunc loadfn);
+
+static int64_t __lahar_default_scorer(const LaharDeviceInfo* devinfo);
+static uint32_t __lahar_default_surface_format_chooser(LaharWindowState* window_state, LaharDeviceInfo* physdev_info, VkSurfaceFormatKHR* surface_fmt_out);
+static uint32_t __lahar_default_surface_present_mode_chooser(LaharWindowState* window_state, LaharDeviceInfo* physdev_info, VkPresentModeKHR* present_mode_out);
+static uint32_t __lahar_default_resizer(LaharWindow* window);
+static VKAPI_ATTR VkBool32 VKAPI_CALL __lahar_default_dbgcallback(
+    VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+    VkDebugUtilsMessageTypeFlagsEXT type,
+    const VkDebugUtilsMessengerCallbackDataEXT* pcallbackdata,
+    void* puserdata
+);
+
+static uint8_t __marena[LAHAR_M_ARENA_SIZE];
+static size_t __mpos = 0;
+static size_t __mcheck[LAHAR_M_CHECK_CT];
+static size_t __mchkct = 0;
+
+static void lahar_temp_mcheck() {
+    LAHAR_FATAL_ASSERT(__mchkct < sizeof(__mcheck) / sizeof(__mcheck[0])); // if this trips, Lahar is broken
+    __mcheck[__mchkct++] = __mpos;
+}
+
+static void lahar_temp_mpop() {
+    if (__mchkct > 0) {
+        __mchkct--;
+        __mpos = __mcheck[__mchkct];
+    }
+}
+
+
+static void* lahar_temp_alloc_aligned(size_t bytes, size_t alignment) {
+    uintptr_t current = (uintptr_t)&__marena[__mpos];
+    size_t padding = (-(size_t)current) & (alignment - 1);
+
+    size_t real_amt = padding + bytes;
+
+    // Overflow-safe form of __mpos + real_amt <= size; proceeding past this
+    // would hand out memory beyond the arena and corrupt whatever follows it.
+    LAHAR_FATAL_ASSERT(sizeof(__marena) - __mpos >= real_amt);
+
+    void* ret = &__marena[__mpos + padding];
+    __mpos += real_amt;
+    memset(ret, 0, bytes);
+    return ret;
+}
+
+static void* lahar_temp_alloc(size_t bytes) {
+    return lahar_temp_alloc_aligned(bytes, LAHAR_DEFAULT_ALIGNMENT);
+}
+
+static char* lahar_temp_strdup(const char* str) {
+    size_t len = strlen(str);
+    char* buf = (char*)lahar_temp_alloc(len + 1);
+    memcpy(buf, str, len + 1);
+    return buf;
+}
+
+
+
+
 /** Loader callback for loading instance level vulkan functions */
 static PFN_vkVoidFunction __lahar_loader_inst(const char* name) {
     return vkGetInstanceProcAddr(lahar->instance, name);
@@ -3057,6 +3131,586 @@ static VkBaseInStructure* __lahar_pnext_fetch(void* chain, VkStructureType type)
 
     return NULL;
 }
+
+/** This builds a complete list of the instance level extensions required. It
+ * writes the strings into temp memory, and the return array in temp memory.
+ */
+static uint32_t __lahar_temp_extensions(LaharWindow* window, uint32_t* count, char*** ext_out) {
+    uint32_t err = LAHAR_ERR_SUCCESS;
+
+    uint32_t ext_count = (uint32_t)lahar->extensions.rie_count;
+    char** win_exts = NULL;
+    char** extensions = NULL;
+    size_t i = 0;
+
+    if (lahar->wantvalidation) {
+        ext_count++;
+    }
+
+    uint32_t win_count = 0;
+    if ((err = lahar_window_get_extensions(window, &win_count, NULL))) {
+        goto end;
+    }
+
+    ext_count += win_count;
+
+    win_exts = (char**)lahar_temp_alloc(sizeof(char*) * win_count);
+
+    if ((err = lahar_window_get_extensions(window, &win_count, (const char**)win_exts))) {
+        goto end;
+    }
+
+    extensions = (char**)lahar_temp_alloc(sizeof(char*) * ext_count);
+
+    for (; i < lahar->extensions.rie_count; i++) {
+        const char* current = lahar->extensions.req_inst_exts[i];
+        extensions[i] = lahar_temp_strdup(current);
+    }
+
+    for (size_t j = 0; j < win_count; j++) {
+        const char* current = win_exts[j];
+        extensions[i++] = lahar_temp_strdup(current);
+    }
+
+    if (lahar->wantvalidation) {
+        extensions[i++] = lahar_temp_strdup(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    }
+
+    *count = ext_count;
+    *ext_out = extensions;
+
+end:
+    return err;
+}
+
+static uint32_t __lahar_init_window_swapchain(LaharWindowState* winstate, VkSwapchainKHR old_swap) {
+    uint32_t err = LAHAR_ERR_SUCCESS;
+    lahar_temp_mcheck();
+
+    LaharSurfaceFormatChooseFunc choose_format = lahar->format_chooser ? lahar->format_chooser : __lahar_default_surface_format_chooser;
+    LaharSurfacePresentModeChooseFunc choose_mode = lahar->present_chooser ? lahar->present_chooser : __lahar_default_surface_present_mode_chooser;
+    LaharAttachmentConfig* color_conf = NULL;
+    uint32_t queue_indices[2] = ZINIT;
+    uint32_t queue_index_count = 0;
+
+    VkSurfaceCapabilitiesKHR surface_caps = ZINIT;
+    VkSwapchainCreateInfoKHR create_info = ZINIT;
+    uint32_t image_count = 0;
+
+    VkImage* swap_imgs = NULL;
+    VkImageView* swap_views = NULL;
+
+    VkSemaphoreCreateInfo sem_info = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
+    };
+
+    VkFenceCreateInfo fence_info = {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .flags = VK_FENCE_CREATE_SIGNALED_BIT
+    };
+
+    uint32_t avail_ct = 0;
+    uint32_t fin_ct = 0;
+    uint32_t fence_ct = 0;
+
+    if (winstate->attachment_count > 1 && !lahar->gpu_allocator) {
+        err = LAHAR_ERR_INVALID_CONFIGURATION;
+        goto end;
+    }
+
+    color_conf = lahar_window_attachment_config_color(winstate->window);
+
+    LAHAR_ASSERT(color_conf);
+
+    // Step 1: setup the swapchain
+    queue_indices[0] = lahar->physdev_info.graphics_queue_index;
+    queue_indices[1] = lahar->physdev_info.present_queue_index;
+    queue_index_count = queue_indices[0] == queue_indices[1] ? 0 : 2;
+
+    if ((lahar->vkresult = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(lahar->physdev_info.physdev, winstate->surface, &surface_caps))) {
+        err = LAHAR_ERR_VK_ERR;
+        goto end;
+    }
+
+    if (winstate->desired_img_count == 0) {
+        winstate->desired_img_count = winstate->max_in_flight;
+    }
+
+    if ((err = choose_format(winstate, &lahar->physdev_info, &winstate->surface_format))) {
+        goto end;
+    }
+
+    if ((err = lahar_window_get_size(winstate->window, &winstate->width, &winstate->height))) {
+        goto end;
+    }
+
+    // Store the reported framebuffer size before clamping
+    create_info.imageExtent.width = winstate->width;
+    create_info.imageExtent.height = winstate->height;
+
+    if (create_info.imageExtent.width > surface_caps.maxImageExtent.width) {
+        create_info.imageExtent.width = surface_caps.maxImageExtent.width;
+    }
+    else if (create_info.imageExtent.width < surface_caps.minImageExtent.width) {
+        create_info.imageExtent.width = surface_caps.minImageExtent.width;
+    }
+
+    if (create_info.imageExtent.height > surface_caps.maxImageExtent.height) {
+        create_info.imageExtent.height = surface_caps.maxImageExtent.height;
+    }
+    else if (create_info.imageExtent.height < surface_caps.minImageExtent.height) {
+        create_info.imageExtent.height = surface_caps.minImageExtent.height;
+    }
+
+    // Then store the actual swap extent
+    winstate->extent = create_info.imageExtent;
+
+    if ((err = choose_mode(winstate, &lahar->physdev_info, &create_info.presentMode))) {
+        goto end;
+    }
+
+    image_count = winstate->desired_img_count;
+
+    if (surface_caps.maxImageCount > 0 && image_count > surface_caps.maxImageCount) {
+        image_count = surface_caps.maxImageCount;
+    }
+    else if (surface_caps.minImageCount > 0 && image_count < surface_caps.minImageCount) {
+        image_count = surface_caps.minImageCount;
+    }
+
+    create_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+    create_info.surface = winstate->surface;
+    create_info.imageFormat = winstate->surface_format.format;
+    create_info.imageColorSpace = winstate->surface_format.colorSpace;
+    create_info.imageArrayLayers = 1;
+    create_info.imageUsage = color_conf->usage ? color_conf->usage : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    create_info.imageSharingMode = queue_indices[0] == queue_indices[1] ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT;
+    create_info.queueFamilyIndexCount = queue_index_count;
+    create_info.pQueueFamilyIndices = queue_indices;
+    create_info.preTransform = surface_caps.currentTransform;
+    create_info.compositeAlpha = winstate->alpha ? winstate->alpha : VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    create_info.clipped = VK_TRUE;
+    create_info.oldSwapchain = old_swap;
+    create_info.minImageCount = image_count;
+
+    if ((lahar->vkresult = vkCreateSwapchainKHR(lahar->device, &create_info, lahar->vkalloc, &winstate->swapchain)) != VK_SUCCESS) {
+        err = LAHAR_ERR_VK_ERR;
+        goto end;
+    }
+
+    // Step 2: allocate the space we need for all the attachments
+    vkGetSwapchainImagesKHR(lahar->device, winstate->swapchain, &winstate->swap_size, NULL);
+
+    if (winstate->swap_size == 0) {
+        // TODO: this can happen, indicates that we can't do any drawing right now, such as minimized
+    }
+
+    lahar_trace("Window %" PRIu64 " had a swapchain of size %lu created", winstate->index, winstate->swap_size);
+
+    LAHAR_ASSERT(!winstate->attachments);
+
+    winstate->attachments = (LaharAttachment**)lahar_malloc(sizeof(*winstate->attachments) * winstate->attachment_count);
+    memset(winstate->attachments, 0, sizeof(*winstate->attachments) * winstate->attachment_count);
+
+    for (size_t j = 0; j < winstate->attachment_count; j++) {
+        size_t bytes = winstate->swap_size * sizeof(LaharAttachment);
+
+        LAHAR_ASSERT(!winstate->attachments[j]);
+
+        winstate->attachments[j] = (LaharAttachment*)lahar_malloc(bytes);
+        memset(winstate->attachments[j], 0, bytes);
+    }
+
+    // Step 3: create the swapchain color views
+    swap_imgs = (VkImage*)lahar_temp_alloc(winstate->swap_size * sizeof(VkImage));
+    swap_views = (VkImageView*)lahar_temp_alloc(winstate->swap_size * sizeof(VkImageView));
+
+    vkGetSwapchainImagesKHR(lahar->device, winstate->swapchain, &winstate->swap_size, swap_imgs);
+
+    for (uint32_t j = 0; j < winstate->swap_size; j++) {
+        VkImageViewCreateInfo view_create_info = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = swap_imgs[j],
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format =  winstate->surface_format.format,
+            .components = {
+                .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .a = VK_COMPONENT_SWIZZLE_IDENTITY,
+            },
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1
+            }
+        };
+
+        if ((lahar->vkresult = vkCreateImageView(lahar->device, &view_create_info, lahar->vkalloc, &swap_views[j])) != VK_SUCCESS) {
+            err = LAHAR_ERR_VK_ERR;
+            goto end;
+        }
+
+        LaharAttachment* color = lahar_window_attachment_color(winstate->window, j);
+        color->image = swap_imgs[j];
+        color->view = swap_views[j];
+    }
+
+    // Step 4: allocate and create non-color attachments
+    for (size_t j = 1; j < winstate->attachment_count; j++) {
+        LaharAttachment* attachment_list = winstate->attachments[j];
+        LaharAttachmentConfig* attachment_config = &winstate->attachment_configs[j];
+
+        if (attachment_config->img_info.sType != VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO) {
+            attachment_config->img_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        }
+
+        attachment_config->img_info.extent.width = winstate->width;
+        attachment_config->img_info.extent.height = winstate->height;
+
+        if (attachment_config->img_info.extent.depth == 0) {
+            attachment_config->img_info.extent.depth = 1;
+        }
+
+        for (size_t k = 0; k < winstate->swap_size; k++) {
+            LaharAttachment* attachment = &attachment_list[k];
+
+            LaharAllocationCreateInfo alloc_create_info = {
+                .usage = LAHAR_MU_DEVICE_ONLY,
+            };
+
+            switch (attachment_config->role) {
+                case LAHAR_ATTROLE_COLOR:
+                case LAHAR_ATTROLE_USER:
+                    alloc_create_info.role = LAHAR_AR_COLOR_ATTACHMENT;
+                    break;
+                case LAHAR_ATTROLE_DEPTH:
+                case LAHAR_ATTROLE_STENCIL:
+                case LAHAR_ATTROLE_DEPTH_STENCIL:
+                    alloc_create_info.role = LAHAR_AR_DEPTH_STENCIL_ATTACHMENT;
+                    break;
+                default:
+                    break;
+            }
+
+            if ((err = lahar->gpu_allocator->alloc_image(
+                lahar->gpu_allocator,
+                &attachment_config->img_info,
+                &alloc_create_info,
+                &attachment->image,
+                &attachment->img_allocation
+            ))) {
+                goto end;
+            }
+
+            attachment_config->view_info.image = attachment->image;
+
+            if ((lahar->vkresult = vkCreateImageView(lahar->device, &attachment_config->view_info, lahar->vkalloc, &attachment->view))) {
+                err = LAHAR_ERR_VK_ERR;
+                goto end;
+            }
+        }
+    }
+
+    // Step 5: create command buffers (if requested)
+    if (lahar->wantcommands) {
+        LAHAR_ASSERT(winstate->commands == NULL);
+
+        VkCommandPoolCreateInfo pool_info = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+            .queueFamilyIndex = lahar->physdev_info.graphics_queue_index
+        };
+
+        if ((lahar->vkresult = vkCreateCommandPool(lahar->device, &pool_info, lahar->vkalloc, &winstate->pool))) {
+            err = LAHAR_ERR_VK_ERR;
+            goto end;
+        }
+
+        winstate->commands = (VkCommandBuffer*)lahar_malloc(winstate->swap_size * sizeof(VkCommandBuffer));
+
+        VkCommandBufferAllocateInfo buffer_alloc = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandPool = winstate->pool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = winstate->swap_size
+        };
+
+        if ((lahar->vkresult = vkAllocateCommandBuffers(lahar->device, &buffer_alloc, winstate->commands)) != VK_SUCCESS) {
+            err = LAHAR_ERR_VK_ERR;
+            goto end;
+        }
+    }
+
+    // Step 6: create the sync primtives
+    avail_ct = winstate->max_in_flight;
+    fin_ct = winstate->swap_size;
+    fence_ct = winstate->max_in_flight;
+
+    LAHAR_ASSERT(winstate->image_available == NULL);
+    LAHAR_ASSERT(winstate->render_finished == NULL);
+    LAHAR_ASSERT(winstate->in_flight == NULL);
+    LAHAR_ASSERT(winstate->present_fences == NULL);
+
+    winstate->image_available = (VkSemaphore*)lahar_malloc(avail_ct * sizeof(VkSemaphore));
+    winstate->render_finished = (VkSemaphore*)lahar_malloc(fin_ct * sizeof(VkSemaphore));
+    winstate->in_flight = (VkFence*)lahar_malloc(fence_ct * sizeof(VkFence));
+    winstate->present_fences = (VkFence*)lahar_malloc(fin_ct * sizeof(VkFence));
+
+    winstate->image_available_size = avail_ct;
+    winstate->render_finished_size = fin_ct;
+    winstate->in_flight_size = fence_ct;
+    winstate->present_fences_size = fin_ct;
+
+    lahar_trace("Window %" PRIu64 " had %lu fences, %lu avail sems, and %lu finished sems created", winstate->index, fence_ct, avail_ct, fence_ct);
+
+    for (size_t j = 0; j < avail_ct; j++) {
+        if ((lahar->vkresult = vkCreateSemaphore(lahar->device, &sem_info, lahar->vkalloc, &winstate->image_available[j])) != VK_SUCCESS) {
+            err = LAHAR_ERR_VK_ERR;
+            goto end;
+        }
+    }
+
+    for (size_t j = 0; j < fin_ct; j++) {
+        if ((lahar->vkresult = vkCreateSemaphore(lahar->device, &sem_info, lahar->vkalloc, &winstate->render_finished[j])) != VK_SUCCESS) {
+            err = LAHAR_ERR_VK_ERR;
+            goto end;
+        }
+    }
+
+    for (size_t j = 0; j < fence_ct; j++) {
+        if ((lahar->vkresult = vkCreateFence(lahar->device, &fence_info, lahar->vkalloc, &winstate->in_flight[j])) != VK_SUCCESS) {
+            err = LAHAR_ERR_VK_ERR;
+            goto end;
+        }
+    }
+
+    for (size_t j = 0; j < fin_ct; j++) {
+        if ((lahar->vkresult = vkCreateFence(lahar->device, &fence_info, lahar->vkalloc, &winstate->present_fences[j])) != VK_SUCCESS) {
+            err = LAHAR_ERR_VK_ERR;
+            goto end;
+        }
+    }
+
+end:
+    lahar_temp_mpop();
+    return err;
+}
+
+// Called by deinit, so has to check all func pointers before use
+static void __lahar_deinit_window_swapchain(LaharWindowState* state) {
+    if (!state) { return; }
+
+    if (vkDestroyFence) {
+        for (uint32_t i = 0; i < state->in_flight_size; i++) {
+            vkDestroyFence(lahar->device, state->in_flight[i], lahar->vkalloc);
+        }
+
+        for (uint32_t i = 0; i < state->present_fences_size; i++) {
+            vkDestroyFence(lahar->device, state->present_fences[i], lahar->vkalloc);
+        }
+    }
+
+    lahar_free(state->in_flight);
+    lahar_free(state->present_fences);
+
+    if (vkDestroySemaphore) {
+        for (uint32_t i = 0; i < state->render_finished_size; i++) {
+            vkDestroySemaphore(lahar->device, state->render_finished[i], lahar->vkalloc);
+        }
+
+        for (uint32_t i = 0; i < state->image_available_size; i++) {
+            vkDestroySemaphore(lahar->device, state->image_available[i], lahar->vkalloc);
+        }
+    }
+
+    lahar_free(state->render_finished);
+    lahar_free(state->image_available);
+
+    if (vkDestroyCommandPool && state->pool != VK_NULL_HANDLE) {
+        vkDestroyCommandPool(lahar->device, state->pool, lahar->vkalloc);
+    }
+
+    lahar_free(state->commands);
+
+    // Special pass to destroy only the views (for the color attachment, images came from swap)
+
+    if (state->attachments) {
+        if (state->attachments[0]) {
+            for (uint32_t i = 0; i < state->swap_size; i++) {
+                LaharAttachment* attachment = &state->attachments[0][i];
+
+                if (attachment && attachment->view != VK_NULL_HANDLE && vkDestroyImageView) {
+                    vkDestroyImageView(lahar->device, attachment->view, lahar->vkalloc);
+                }
+            }
+        }
+
+        lahar_free(state->attachments[0]);
+
+        for (uint32_t i = 1; i < state->attachment_count; i++) {
+            LaharAttachment* attachment_list = state->attachments[i];
+            if (!attachment_list) { continue; }
+
+            for (uint32_t j = 0; j < state->swap_size; j++) {
+                LaharAttachment* attachment = &state->attachments[i][j];
+
+                if (attachment->view != VK_NULL_HANDLE && vkDestroyImageView) {
+                    vkDestroyImageView(lahar->device, attachment->view, lahar->vkalloc);
+                }
+
+                if (attachment->image != VK_NULL_HANDLE && lahar->gpu_allocator) {
+                    lahar->gpu_allocator->free_image(lahar->gpu_allocator, attachment->image, attachment->img_allocation);
+                }
+            }
+
+            lahar_free(attachment_list);
+        }
+    }
+
+    lahar_free(state->attachments);
+    lahar_free(state->attachment_configs);
+
+    if (state->swapchain != VK_NULL_HANDLE && vkDestroySwapchainKHR) {
+        vkDestroySwapchainKHR(lahar->device, state->swapchain, lahar->vkalloc);
+    }
+
+    if (state->surface != VK_NULL_HANDLE && vkDestroySurfaceKHR) {
+        vkDestroySurfaceKHR(lahar->instance, state->surface, lahar->vkalloc);
+    }
+}
+
+/* A retired window is reclaimable when every in_flight fence it carried is
+ * signaled. Fences are only ever reset immediately before a submit that
+ * signals them, so unsignaled means the GPU still owns work recorded against
+ * this swapchain, and signaled means all submits completed. */
+static bool __lahar_window_retire_reclaimable(const LaharWindowState* entry) {
+    if (!vkGetFenceStatus) { return false; }
+
+    for (uint32_t i = 0; i < entry->in_flight_size; i++) {
+        if (vkGetFenceStatus(lahar->device, entry->in_flight[i]) != VK_SUCCESS) { return false; }
+    }
+
+    // Present fences: only ever unsignaled while a present that will signal
+    // them is pending (reset happens immediately before vkQueuePresentKHR).
+    // Without swapchain_maintenance1 they are never attached, stay signaled
+    // from creation, and this loop passes trivially -- the flush's
+    // present-queue drain covers the gap in that case.
+    for (uint32_t i = 0; i < entry->present_fences_size; i++) {
+        if (vkGetFenceStatus(lahar->device, entry->present_fences[i]) != VK_SUCCESS) { return false; }
+    }
+
+    return true;
+}
+
+/** Destroy retired windows. Forced: device idle, destroy everything.
+ * Unforced: early-out if nothing is reclaimable (the common case, no waits).
+ * Otherwise destroy the entries whose fences prove their work complete --
+ * with swapchain_maintenance1 that proof includes present completion, so no
+ * wait; without it, one present-queue idle first (brief: only satisfied
+ * presents can remain). Unreclaimable entries stay queued either way. */
+static void __lahar_flush_window_retire_queue(bool force) {
+    if (lahar->window_retire_count == 0) { return; }
+
+    if (force && vkDeviceWaitIdle) {
+        vkDeviceWaitIdle(lahar->device);
+    }
+
+    bool reclaim[LAHAR_MAX_WINDOW_RETIRES];
+    bool any = false;
+
+    for (uint32_t i = 0; i < lahar->window_retire_count; i++) {
+        reclaim[i] = force || __lahar_window_retire_reclaimable(&lahar->window_retire_queue[i]);
+        any = any || reclaim[i];
+    }
+
+    if (!any) { return; }
+
+    if (!force && !lahar->swapchain_maintenance1) {
+        if (vkQueueWaitIdle && lahar->presentQueue != VK_NULL_HANDLE) {
+            vkQueueWaitIdle(lahar->presentQueue);
+        }
+    }
+
+    uint32_t kept = 0;
+
+    for (uint32_t i = 0; i < lahar->window_retire_count; i++) {
+        LaharWindowState* entry = &lahar->window_retire_queue[i];
+
+        if (reclaim[i]) {
+            __lahar_deinit_window_swapchain(entry);
+        }
+        else {
+            lahar->window_retire_queue[kept++] = *entry;
+        }
+    }
+
+    lahar->window_retire_count = kept;
+}
+
+/** Queue a window for retirement. The pushed entry is never destroyed by
+ * this call, so handles copied out of `state` beforehand remain valid until
+ * the next flush. */
+static void __lahar_retire_window(LaharWindowState* state) {
+    if (lahar->window_retire_count >= LAHAR_MAX_WINDOW_RETIRES) {
+        __lahar_flush_window_retire_queue(false);
+
+        if (lahar->window_retire_count >= LAHAR_MAX_WINDOW_RETIRES) {
+            __lahar_flush_window_retire_queue(true);
+        }
+    }
+
+    LaharWindowState* retired = &lahar->window_retire_queue[lahar->window_retire_count++];
+
+    LaharAttachmentConfig* configs = state->attachment_configs;
+    VkSurfaceKHR surface = state->surface;
+
+    *retired = *state;
+
+    // Remove the stuff that shouldn't be destroyed in a retired window
+    retired->surface = VK_NULL_HANDLE;
+    retired->attachment_configs = NULL;
+
+    // Reset the input state, but then copy back out the state
+    // that retiring shouldn't destroy
+    memset(state, 0, sizeof(*state));
+
+    state->window = retired->window;
+    state->surface = surface;
+    state->index = retired->index;
+    state->desired_img_count = retired->desired_img_count;
+    state->max_in_flight = retired->max_in_flight;
+    state->alpha = retired->alpha;
+    state->auto_recreate_swap = retired->auto_recreate_swap;
+    state->queued_destruction = retired->queued_destruction;
+    state->resize_callback = retired->resize_callback;
+    state->attachment_configs = configs;
+    state->attachment_count = retired->attachment_count;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #if defined(LAHAR_USE_GLFW)
     uint32_t lahar_window_surface_create(LaharWindow* window, VkSurfaceKHR* surface) {
@@ -3401,55 +4055,6 @@ static VkBaseInStructure* __lahar_pnext_fetch(void* chain, VkStructureType type)
 
 
 
-static uint32_t lahar_load_loader(LaharLoaderFunc loadfn);
-static uint32_t lahar_load_instance(LaharLoaderFunc loadfn);
-static uint32_t lahar_load_device(LaharLoaderFunc loadfn);
-
-static uint8_t __marena[LAHAR_M_ARENA_SIZE];
-static size_t __mpos = 0;
-static size_t __mcheck[LAHAR_M_CHECK_CT];
-static size_t __mchkct = 0;
-
-static void lahar_temp_mcheck() {
-    LAHAR_FATAL_ASSERT(__mchkct < sizeof(__mcheck) / sizeof(__mcheck[0])); // if this trips, Lahar is broken
-    __mcheck[__mchkct++] = __mpos;
-}
-
-static void lahar_temp_mpop() {
-    if (__mchkct > 0) {
-        __mchkct--;
-        __mpos = __mcheck[__mchkct];
-    }
-}
-
-
-static void* lahar_temp_alloc_aligned(size_t bytes, size_t alignment) {
-    uintptr_t current = (uintptr_t)&__marena[__mpos];
-    size_t padding = (-(size_t)current) & (alignment - 1);
-
-    size_t real_amt = padding + bytes;
-
-    // Overflow-safe form of __mpos + real_amt <= size; proceeding past this
-    // would hand out memory beyond the arena and corrupt whatever follows it.
-    LAHAR_FATAL_ASSERT(sizeof(__marena) - __mpos >= real_amt);
-
-    void* ret = &__marena[__mpos + padding];
-    __mpos += real_amt;
-    memset(ret, 0, bytes);
-    return ret;
-}
-
-static void* lahar_temp_alloc(size_t bytes) {
-    return lahar_temp_alloc_aligned(bytes, LAHAR_DEFAULT_ALIGNMENT);
-}
-
-static char* lahar_temp_strdup(const char* str) {
-    size_t len = strlen(str);
-    char* buf = (char*)lahar_temp_alloc(len + 1);
-    memcpy(buf, str, len + 1);
-    return buf;
-}
-
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL __lahar_default_dbgcallback(
     VkDebugUtilsMessageSeverityFlagBitsEXT severity,
@@ -3521,7 +4126,6 @@ static int64_t __lahar_default_scorer(const LaharDeviceInfo* devinfo) {
 }
 
 static uint32_t __lahar_default_surface_format_chooser(LaharWindowState* window_state, LaharDeviceInfo* physdev_info, VkSurfaceFormatKHR* surface_fmt_out){
-
     for (size_t i = 0; i < physdev_info->surface_fmt_count; i++) {
         VkSurfaceFormatKHR* fmt = &physdev_info->surface_formats[i];
 
@@ -3551,244 +4155,18 @@ static uint32_t __lahar_default_resizer(LaharWindow* window) {
     LaharWindowState* winstate = lahar_window_state(window);
     if (!winstate) { return LAHAR_ERR_INVALID_WINDOW; }
 
-    lahar_temp_mcheck();
+    VkSwapchainKHR old_swap = winstate->swapchain;
 
-    uint32_t err = LAHAR_ERR_SUCCESS;
-    uint32_t image_count = 0;
-    VkImage* swap_imgs = NULL;
-    VkImageView* swap_views = NULL;
-    uint32_t old_swap_size = winstate->swap_size;
-    LaharSurfaceFormatChooseFunc choose_format = lahar->format_chooser ? lahar->format_chooser : __lahar_default_surface_format_chooser;
-    LaharSurfacePresentModeChooseFunc choose_mode = lahar->present_chooser ? lahar->present_chooser : __lahar_default_surface_present_mode_chooser;
-    VkSurfaceCapabilitiesKHR surface_caps = ZINIT;
-    LaharAttachmentConfig* color_conf = lahar_window_attachment_config_color(window);
-    uint32_t queue_indices[2] = { lahar->physdev_info.graphics_queue_index, lahar->physdev_info.present_queue_index };
-    uint32_t queue_index_count = queue_indices[0] == queue_indices[1] ? 0 : 2;
-    VkSwapchainCreateInfoKHR create_info = ZINIT;
+    __lahar_retire_window(winstate);
 
-    uint32_t window_width = 0;
-    uint32_t window_height = 0;
-
-    if ((err = lahar_window_get_size(winstate->window, &window_width, &window_height))) {
-        goto end;
+    if (!winstate->queued_destruction) {
+        __lahar_flush_window_retire_queue(true);
+        old_swap = VK_NULL_HANDLE;
     }
 
-    if (!color_conf) {
-        lahar_warn("No color attachment on window");
-        return LAHAR_ERR_INVALID_STATE;
-    }
+    __lahar_init_window_swapchain(winstate, old_swap);
 
-    if ((err = lahar_window_wait_inactive(window))) {
-        goto end;
-    }
-
-    if (winstate->attachment_count > 1 && !lahar->gpu_allocator) {
-        lahar_warn("Non-color attachments requested, no gpu allocator provided");
-        err = LAHAR_ERR_INVALID_STATE;
-        goto end;
-    }
-
-    for (uint32_t i = 0; i < winstate->swap_size; i++) {
-        LaharAttachment* attachment = lahar_window_attachment_color(window, i);
-
-        if (attachment->view != VK_NULL_HANDLE && vkDestroyImageView) {
-            vkDestroyImageView(lahar->device, attachment->view, lahar->vkalloc);
-        }
-    }
-
-    for (uint32_t i = 1; i < winstate->attachment_count; i++) {
-        LaharAttachment* attachment_list = winstate->attachments[i];
-
-        for (size_t j = 0; j < winstate->swap_size; j++) {
-            LaharAttachment* attachment = &attachment_list[j];
-
-            if (attachment->view != VK_NULL_HANDLE&& vkDestroyImageView) {
-                vkDestroyImageView(lahar->device, attachment->view, lahar->vkalloc);
-            }
-
-            if (attachment->image != VK_NULL_HANDLE) {
-                lahar->gpu_allocator->free_image(lahar->gpu_allocator, attachment->image, attachment->img_allocation);
-            }
-        }
-    }
-
-    vkDestroySwapchainKHR(lahar->device, winstate->swapchain, lahar->vkalloc);
-
-    if (winstate->desired_img_count == 0) {
-        winstate->desired_img_count = 2;
-    }
-
-    if ((lahar->vkresult = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(lahar->physdev_info.physdev, winstate->surface, &surface_caps))) {
-        err = LAHAR_ERR_VK_ERR;
-        goto end;
-    }
-
-    if ((err = choose_format(winstate, &lahar->physdev_info, &winstate->surface_format))) {
-        err = LAHAR_ERR_VK_ERR;
-        goto end;
-    }
-
-    create_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-    create_info.surface = winstate->surface;
-    create_info.imageFormat = winstate->surface_format.format;
-    create_info.imageColorSpace = winstate->surface_format.colorSpace;
-    create_info.imageArrayLayers = 1;
-    create_info.imageUsage = color_conf->usage ? color_conf->usage : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    create_info.imageSharingMode = queue_indices[0] == queue_indices[1] ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT;
-    create_info.queueFamilyIndexCount = queue_index_count;
-    create_info.pQueueFamilyIndices = queue_indices;
-    create_info.preTransform = surface_caps.currentTransform;
-    create_info.compositeAlpha = winstate->alpha ? winstate->alpha : VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-    create_info.clipped = VK_TRUE;
-    create_info.oldSwapchain = VK_NULL_HANDLE;
-    create_info.imageExtent.width = window_width;
-    create_info.imageExtent.height = window_height;
-
-    if (create_info.imageExtent.width > surface_caps.maxImageExtent.width) {
-        create_info.imageExtent.width = surface_caps.maxImageExtent.width;
-    }
-    else if (create_info.imageExtent.width < surface_caps.minImageExtent.width) {
-        create_info.imageExtent.width = surface_caps.minImageExtent.width;
-    }
-
-    if (create_info.imageExtent.height > surface_caps.maxImageExtent.height) {
-        create_info.imageExtent.height = surface_caps.maxImageExtent.height;
-    }
-    else if (create_info.imageExtent.height < surface_caps.minImageExtent.height) {
-        create_info.imageExtent.height = surface_caps.minImageExtent.height;
-    }
-
-    if ((err = choose_mode(winstate, &lahar->physdev_info, &create_info.presentMode))) {
-        goto end;
-    }
-
-    image_count = winstate->desired_img_count;
-
-    if (surface_caps.maxImageCount > 0 && image_count > surface_caps.maxImageCount) {
-        image_count = surface_caps.maxImageCount;
-    }
-    else if (surface_caps.minImageCount > 0 && image_count < surface_caps.minImageCount) {
-        image_count = surface_caps.minImageCount;
-    }
-
-    create_info.minImageCount = image_count;
-
-    if ((lahar->vkresult = vkCreateSwapchainKHR(lahar->device, &create_info, lahar->vkalloc, &winstate->swapchain)) != VK_SUCCESS) {
-        goto end;
-    }
-
-    vkGetSwapchainImagesKHR(lahar->device, winstate->swapchain, &winstate->swap_size, NULL);
-
-    // TODO: handle potential swapchain image count changes. Runtime data,
-    // not an invariant: the spec allows the count to change on recreate.
-    LAHAR_FATAL_ASSERT(old_swap_size == winstate->swap_size);
-
-    swap_imgs = (VkImage*)lahar_temp_alloc(winstate->swap_size * sizeof(VkImage));
-    swap_views = (VkImageView*)lahar_temp_alloc(winstate->swap_size * sizeof(VkImageView));
-
-    vkGetSwapchainImagesKHR(lahar->device, winstate->swapchain, &winstate->swap_size, swap_imgs);
-
-    for (uint32_t j = 0; j < winstate->swap_size; j++) {
-        VkImageViewCreateInfo view_create_info = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            .image = swap_imgs[j],
-            .viewType = VK_IMAGE_VIEW_TYPE_2D,
-            .format =  winstate->surface_format.format,
-            .components = {
-                .r = VK_COMPONENT_SWIZZLE_IDENTITY,
-                .g = VK_COMPONENT_SWIZZLE_IDENTITY,
-                .b = VK_COMPONENT_SWIZZLE_IDENTITY,
-                .a = VK_COMPONENT_SWIZZLE_IDENTITY,
-            },
-            .subresourceRange = {
-                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = 1
-            }
-        };
-
-        if ((lahar->vkresult = vkCreateImageView(lahar->device, &view_create_info, lahar->vkalloc, &swap_views[j])) != VK_SUCCESS) {
-            err = LAHAR_ERR_VK_ERR;
-            goto end;
-        }
-
-        LaharAttachment* color = lahar_window_attachment_color(window, j);
-        color->image = swap_imgs[j];
-        color->view = swap_views[j];
-        color->layout = VK_IMAGE_LAYOUT_UNDEFINED;
-    }
-
-    if (winstate->attachment_count > 1 && !lahar->gpu_allocator) {
-        err = LAHAR_ERR_INVALID_CONFIGURATION;
-        goto end;
-    }
-
-    for (size_t j = 1; j < winstate->attachment_count; j++) {
-        LaharAttachment* attachment_list = winstate->attachments[j];
-        LaharAttachmentConfig* attachment_config = &winstate->attachment_configs[j];
-
-        if (attachment_config->img_info.sType != VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO) {
-            attachment_config->img_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        }
-
-        attachment_config->img_info.extent.width = winstate->width;
-        attachment_config->img_info.extent.height = winstate->height;
-
-        if (attachment_config->img_info.extent.depth == 0) {
-            attachment_config->img_info.extent.depth = 1;
-        }
-
-        for (size_t k = 0; k < winstate->swap_size; k++) {
-            LaharAttachment* attachment = &attachment_list[k];
-
-            LaharAllocationCreateInfo alloc_create_info = {
-                .usage = LAHAR_MU_DEVICE_ONLY,
-            };
-
-            switch (attachment_config->role) {
-                case LAHAR_ATTROLE_COLOR:
-                case LAHAR_ATTROLE_USER:
-                    alloc_create_info.role = LAHAR_AR_COLOR_ATTACHMENT;
-                    break;
-                case LAHAR_ATTROLE_DEPTH:
-                case LAHAR_ATTROLE_STENCIL:
-                case LAHAR_ATTROLE_DEPTH_STENCIL:
-                    alloc_create_info.role = LAHAR_AR_DEPTH_STENCIL_ATTACHMENT;
-                    break;
-                default:
-                    break;
-            }
-
-            if ((err = lahar->gpu_allocator->alloc_image(
-                lahar->gpu_allocator,
-                &attachment_config->img_info,
-                &alloc_create_info,
-                &attachment->image,
-                &attachment->img_allocation
-            ))) {
-                goto end;
-            }
-
-            attachment_config->view_info.image = attachment->image;
-
-            if ((lahar->vkresult = vkCreateImageView(lahar->device, &attachment_config->view_info, lahar->vkalloc, &attachment->view))) {
-                err = LAHAR_ERR_VK_ERR;
-                goto end;
-            }
-
-
-            attachment->layout = VK_IMAGE_LAYOUT_UNDEFINED;
-        }
-    }
-
-    winstate->width = window_width;
-    winstate->height = window_height;
-
-end:
-    lahar_temp_mpop();
-    return err;
+    return LAHAR_ERR_SUCCESS;
 }
 
 
@@ -4001,7 +4379,7 @@ uint32_t lahar_builder_extension_add_optional_device(const char* extension) {
     const char* cpy = lahar_strdup(extension);
     if (!cpy) { return LAHAR_ERR_ALLOC_FAILED; }
 
-    size_t count = lahar->extensions.ode_count;
+    const size_t count = lahar->extensions.ode_count;
 
     lahar->extensions.opt_dev_exts[count] = cpy;
     lahar->extensions.opt_dev_exts_present[count] = false;
@@ -4070,15 +4448,15 @@ uint32_t lahar_builder_window_register_ex(LaharWindow* window, const LaharWindow
     window_state->desired_img_count = winconf->desired_swap_size ? winconf->desired_swap_size : 2;
     window_state->max_in_flight = winconf->max_in_flight ? winconf->max_in_flight : 2;
 
-    window_state->attachments = (LaharAttachment**)lahar_malloc(window_state->attachment_count * sizeof(void*));
+    //window_state->attachments = (LaharAttachment**)lahar_malloc(window_state->attachment_count * sizeof(void*));
 
     window_state->auto_recreate_swap = !winconf->no_auto_swap_resize;
 
     // We can't create these until after the swap chain, as we don't know how
     // big to make these arrays yet
-    for (size_t i = 0; i < window_state->attachment_count; i++) {
-        window_state->attachments[i] = NULL;
-    }
+    //for (size_t i = 0; i < window_state->attachment_count; i++) {
+    //    window_state->attachments[i] = NULL;
+    //}
 
 end:
     return err;
@@ -4092,7 +4470,7 @@ uint32_t lahar_builder_window_register(LaharWindow* window, LaharWindowProfile w
             // Attachment 0 is ignored anyway, but must be specified for color
             LaharAttachmentConfig attachments = ZINIT;
 
-            LaharWindowConfig conf = {
+            const LaharWindowConfig conf = {
                 .attachment_count = 1,
                 .attachments = &attachments
             };
@@ -4211,88 +4589,11 @@ void lahar_deinit(void) {
         vkDeviceWaitIdle(lahar->device);
     }
 
-    for (size_t i = 0; i < lahar->window_count; i++) {
+    __lahar_flush_window_retire_queue(true);
+
+    for (uint64_t i = 0; i < lahar->window_count; i++) {
         LaharWindowState* state = &lahar->windows[i];
-
-        if (!state) { continue; }
-
-        if (state->commands) {
-            lahar_free(state->commands);
-        }
-
-        if (state->image_available) {
-            for (size_t j = 0; j < state->image_available_size; j++) {
-                if (state->image_available != VK_NULL_HANDLE && vkDestroySemaphore) {
-                    vkDestroySemaphore(lahar->device, state->image_available[j], lahar->vkalloc);
-                }
-            }
-
-            lahar_free(state->image_available);
-        }
-
-        if (state->render_finished) {
-            for (size_t j = 0; j < state->render_finished_size; j++) {
-                if (state->render_finished != VK_NULL_HANDLE && vkDestroySemaphore) {
-                    vkDestroySemaphore(lahar->device, state->render_finished[j], lahar->vkalloc);
-                }
-            }
-
-            lahar_free(state->render_finished);
-        }
-
-        if (state->in_flight) {
-            for (size_t j = 0; j < state->in_flight_size; j++) {
-                if (state->in_flight != VK_NULL_HANDLE && vkDestroyFence) {
-                    vkDestroyFence(lahar->device, state->in_flight[j], lahar->vkalloc);
-                }
-            }
-
-            lahar_free(state->in_flight);
-        }
-
-
-        // Special pass required to destroy _just_ the views in the color attachment
-        for (uint32_t j = 0; j < state->swap_size; j++) {
-            LaharAttachment* attachment = lahar_window_attachment_color(lahar->windows[i].window, j);
-
-            if (attachment && attachment->view != VK_NULL_HANDLE && vkDestroyImageView) {
-                vkDestroyImageView(lahar->device, attachment->view, lahar->vkalloc);
-            }
-        }
-
-        if (state->attachments && state->attachments[0]) {
-            lahar_free(state->attachments[0]);
-        }
-
-        for (size_t j = 1; j < state->attachment_count; j++) {
-            LaharAttachment* attachment_list = state->attachments[j];
-
-            for (size_t k = 0; k < state->swap_size; k++) {
-                LaharAttachment* attachment = &state->attachments[j][k];
-
-                if (attachment->view != VK_NULL_HANDLE && vkDestroyImageView) {
-                    vkDestroyImageView(lahar->device, attachment->view, lahar->vkalloc);
-                }
-
-                if (attachment->image != VK_NULL_HANDLE && lahar->gpu_allocator) {
-                    lahar->gpu_allocator->free_image(lahar->gpu_allocator, attachment->image, attachment->img_allocation);
-                }
-            }
-
-            lahar_free(attachment_list);
-        }
-
-        lahar_free(state->attachments);
-        lahar_free(state->attachment_configs);
-
-        if (state->swapchain != VK_NULL_HANDLE && vkDestroySwapchainKHR) {
-            vkDestroySwapchainKHR(lahar->device, state->swapchain, lahar->vkalloc);
-        }
-
-        if (state->surface != VK_NULL_HANDLE && vkDestroySurfaceKHR) {
-            vkDestroySurfaceKHR(lahar->instance, lahar->windows[i].surface, lahar->vkalloc);
-        }
-
+        __lahar_deinit_window_swapchain(state);
 
         #if !defined(LAHAR_NO_AUTO_DEP)
 
@@ -4314,10 +4615,6 @@ void lahar_deinit(void) {
         lahar_allocator_freelist_deinit(lahar->gpu_allocator);
     }
     #endif
-
-    if (lahar->pool != VK_NULL_HANDLE && vkDestroyCommandPool) {
-        vkDestroyCommandPool(lahar->device, lahar->pool, lahar->vkalloc);
-    }
 
     if (lahar->device != VK_NULL_HANDLE && vkDestroyDevice) {
         vkDestroyDevice(lahar->device, lahar->vkalloc);
@@ -4378,55 +4675,6 @@ void lahar_deinit(void) {
 }
 
 
-
-/** This builds a complete list of the instance level extensions required */
-static uint32_t __lahar_temp_extensions(LaharWindow* window, uint32_t* count, char*** ext_out) {
-    uint32_t err = LAHAR_ERR_SUCCESS;
-
-    uint32_t ext_count = (uint32_t)lahar->extensions.rie_count;
-    char** win_exts = NULL;
-    char** extensions = NULL;
-    size_t i = 0;
-
-    if (lahar->wantvalidation) {
-        ext_count++;
-    }
-
-    uint32_t win_count = 0;
-    if ((err = lahar_window_get_extensions(window, &win_count, NULL))) {
-        goto end;
-    }
-
-    ext_count += win_count;
-
-    win_exts = (char**)lahar_temp_alloc(sizeof(char*) * win_count);
-
-    if ((err = lahar_window_get_extensions(window, &win_count, (const char**)win_exts))) {
-        goto end;
-    }
-
-    extensions = (char**)lahar_temp_alloc(sizeof(char*) * ext_count);
-
-    for (; i < lahar->extensions.rie_count; i++) {
-        const char* current = lahar->extensions.req_inst_exts[i];
-        extensions[i] = lahar_temp_strdup(current);
-    }
-
-    for (size_t j = 0; j < win_count; j++) {
-        const char* current = win_exts[j];
-        extensions[i++] = lahar_temp_strdup(current);
-    }
-
-    if (lahar->wantvalidation) {
-        extensions[i++] = lahar_temp_strdup(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-    }
-
-    *count = ext_count;
-    *ext_out = extensions;
-
-end:
-    return err;
-}
 
 
 static uint32_t __lahar_build_inst_extensions() {
@@ -4607,8 +4855,9 @@ end:
 static uint32_t __lahar_build_early_surface(void) {
     uint32_t err = LAHAR_ERR_SUCCESS;
 
-    for (size_t i = 0; i < lahar->window_count; i++) {
+    for (uint64_t i = 0; i < lahar->window_count; i++) {
         LaharWindowState* winstate = &lahar->windows[i];
+        winstate->index = i;
 
         if ((err = lahar_window_surface_create(winstate->window, &winstate->surface))) {
             return err;
@@ -4810,6 +5059,13 @@ static uint32_t __lahar_build_device(void) {
         .dynamicRendering = VK_TRUE
     };
 
+#if defined(VK_EXT_swapchain_maintenance1)
+    VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT swap_maint1_feature = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT,
+        .swapchainMaintenance1 = VK_TRUE
+    };
+#endif
+
     /* Dynamic rendering can arrive three ways: the KHR extension, the 1.3 core
      * feature bit via VkPhysicalDeviceVulkan13Features, or the standalone
      * feature struct. Resolve all of them here into lahar->dynamic_rendering so
@@ -4865,6 +5121,37 @@ static uint32_t __lahar_build_device(void) {
         }
     }
 
+#if defined(VK_EXT_swapchain_maintenance1)
+    /* Same resolution as dynamic rendering: extension requested + feature
+     * struct chained (injected if the user didn't). Never core, so no
+     * version path. */
+    {
+        const VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT* maint_feature =
+        (const VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT*)__lahar_pnext_fetch(pnext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT);
+
+        bool has_ext = lahar_extension_has_device(VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
+        #if defined(VK_KHR_swapchain_maintenance1)
+        has_ext = has_ext || lahar_extension_has_device(VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
+        #endif
+
+        if (has_ext) {
+            if (!maint_feature) {
+                swap_maint1_feature.pNext = pnext;
+                pnext = (void*)&swap_maint1_feature;
+                lahar->swapchain_maintenance1 = true;
+            }
+            else {
+                // User supplied the struct themselves, respect their bit
+                lahar->swapchain_maintenance1 = maint_feature->swapchainMaintenance1 == VK_TRUE;
+            }
+        }
+
+        if (lahar->swapchain_maintenance1) {
+            lahar_info("Swapchain maintenance1 is enabled, retired swapchains reclaim via present fences");
+        }
+    }
+#endif
+
     device_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     device_create_info.pNext = pnext;
     device_create_info.queueCreateInfoCount = queue_create_count;
@@ -4886,30 +5173,19 @@ static uint32_t __lahar_build_device(void) {
     vkGetDeviceQueue(lahar->device, lahar->physdev_info.graphics_queue_index, 0, &lahar->graphicsQueue);
     vkGetDeviceQueue(lahar->device, lahar->physdev_info.present_queue_index, 0, &lahar->presentQueue);
 
-    if (lahar->wantcommands) {
-        VkCommandPoolCreateInfo pool_info = {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-            .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-            .queueFamilyIndex = lahar->physdev_info.graphics_queue_index
-        };
-
-        if ((lahar->vkresult = vkCreateCommandPool(lahar->device, &pool_info, lahar->vkalloc, &lahar->pool)) != VK_SUCCESS) {
-            err = LAHAR_ERR_VK_ERR;
-            goto end;
-        }
-    }
-
 end:
     lahar_temp_mpop();
     return err;
 }
 
-static uint32_t __lahar_build_swapchain(void) {
+uint32_t lahar_build(void) {
     uint32_t err = LAHAR_ERR_SUCCESS;
-    lahar_temp_mcheck();
 
-    LaharSurfaceFormatChooseFunc choose_format = lahar->format_chooser ? lahar->format_chooser : __lahar_default_surface_format_chooser;
-    LaharSurfacePresentModeChooseFunc choose_mode = lahar->present_chooser ? lahar->present_chooser : __lahar_default_surface_present_mode_chooser;
+    if ((err = __lahar_build_inst_extensions())) { goto end; }
+    if ((err = __lahar_build_instance())) { goto end; }
+    if ((err = __lahar_build_early_surface())) { goto end; }
+    if ((err = __lahar_build_physdev())) { goto end; }
+    if ((err = __lahar_build_device())) { goto end; }
 
     #if defined(LAHAR_USE_VMA)
     if ((err = __lahar_init_vma())) {
@@ -4924,271 +5200,8 @@ static uint32_t __lahar_build_swapchain(void) {
 
     for (uint32_t i = 0; i < lahar->window_count; i++) {
         LaharWindowState* winstate = &lahar->windows[i];
-        VkSurfaceCapabilitiesKHR surface_caps = ZINIT;
-
-        if (winstate->desired_img_count == 0) {
-            winstate->desired_img_count = winstate->max_in_flight;
-        }
-
-        if ((lahar->vkresult = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(lahar->physdev_info.physdev, winstate->surface, &surface_caps))) {
-            err = LAHAR_ERR_VK_ERR;
-            goto end;
-        }
-
-        if ((err = choose_format(winstate, &lahar->physdev_info, &winstate->surface_format))) {
-            goto end;
-        }
-
-        LaharAttachmentConfig* color_conf = lahar_window_attachment_config_color(winstate->window);
-        LAHAR_ASSERT(color_conf);
-
-        uint32_t queue_indices[2] = { lahar->physdev_info.graphics_queue_index, lahar->physdev_info.present_queue_index };
-        uint32_t queue_index_count = queue_indices[0] == queue_indices[1] ? 0 : 2;
-
-        VkSwapchainCreateInfoKHR create_info = {
-            .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-            .surface = winstate->surface,
-            .imageFormat = winstate->surface_format.format,
-            .imageColorSpace = winstate->surface_format.colorSpace,
-            .imageArrayLayers = 1,
-            .imageUsage = color_conf->usage ? color_conf->usage : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-            .imageSharingMode = queue_indices[0] == queue_indices[1] ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT,
-            .queueFamilyIndexCount = queue_index_count,
-            .pQueueFamilyIndices = queue_indices,
-            .preTransform = surface_caps.currentTransform,
-            .compositeAlpha = winstate->alpha ? winstate->alpha : VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-            .clipped = VK_TRUE,
-            .oldSwapchain = VK_NULL_HANDLE,
-        };
-
-        if ((err = lahar_window_get_size(winstate->window, &create_info.imageExtent.width, &create_info.imageExtent.height))) {
-            goto end;
-        }
-
-        if (create_info.imageExtent.width > surface_caps.maxImageExtent.width) {
-            create_info.imageExtent.width = surface_caps.maxImageExtent.width;
-        }
-        else if (create_info.imageExtent.width < surface_caps.minImageExtent.width) {
-            create_info.imageExtent.width = surface_caps.minImageExtent.width;
-        }
-
-        if (create_info.imageExtent.height > surface_caps.maxImageExtent.height) {
-            create_info.imageExtent.height = surface_caps.maxImageExtent.height;
-        }
-        else if (create_info.imageExtent.height < surface_caps.minImageExtent.height) {
-            create_info.imageExtent.height = surface_caps.minImageExtent.height;
-        }
-
-        if ((err = choose_mode(winstate, &lahar->physdev_info, &create_info.presentMode))) {
-            goto end;
-        }
-
-        uint32_t image_count = winstate->desired_img_count;
-
-        if (surface_caps.maxImageCount > 0 && image_count > surface_caps.maxImageCount) {
-            image_count = surface_caps.maxImageCount;
-        }
-        else if (surface_caps.minImageCount > 0 && image_count < surface_caps.minImageCount) {
-            image_count = surface_caps.minImageCount;
-        }
-
-        create_info.minImageCount = image_count;
-
-        if ((lahar->vkresult = vkCreateSwapchainKHR(lahar->device, &create_info, lahar->vkalloc, &winstate->swapchain)) != VK_SUCCESS) {
-            err = LAHAR_ERR_VK_ERR;
-            goto end;
-        }
-
-        vkGetSwapchainImagesKHR(lahar->device, winstate->swapchain, &winstate->swap_size, NULL);
-
-        lahar_trace("Window %zu had a swapchain of size %lu created", i, winstate->swap_size);
-
-        for (size_t j = 0; j < winstate->attachment_count; j++) {
-            size_t bytes = winstate->swap_size * sizeof(LaharAttachment);
-            winstate->attachments[j] = (LaharAttachment*)lahar_malloc(bytes);
-            memset(winstate->attachments[j], 0, bytes);
-        }
-
-        VkImage* swap_imgs = (VkImage*)lahar_temp_alloc(winstate->swap_size * sizeof(VkImage));
-        VkImageView* swap_views = (VkImageView*)lahar_temp_alloc(winstate->swap_size * sizeof(VkImageView));
-
-        vkGetSwapchainImagesKHR(lahar->device, winstate->swapchain, &winstate->swap_size, swap_imgs);
-
-        for (uint32_t j = 0; j < winstate->swap_size; j++) {
-            VkImageViewCreateInfo view_create_info = {
-                .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-                .image = swap_imgs[j],
-                .viewType = VK_IMAGE_VIEW_TYPE_2D,
-                .format =  winstate->surface_format.format,
-                .components = {
-                    .r = VK_COMPONENT_SWIZZLE_IDENTITY,
-                    .g = VK_COMPONENT_SWIZZLE_IDENTITY,
-                    .b = VK_COMPONENT_SWIZZLE_IDENTITY,
-                    .a = VK_COMPONENT_SWIZZLE_IDENTITY,
-                },
-                .subresourceRange = {
-                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .baseMipLevel = 0,
-                    .levelCount = 1,
-                    .baseArrayLayer = 0,
-                    .layerCount = 1
-                }
-            };
-
-            if ((lahar->vkresult = vkCreateImageView(lahar->device, &view_create_info, lahar->vkalloc, &swap_views[j])) != VK_SUCCESS) {
-                err = LAHAR_ERR_VK_ERR;
-                goto end;
-            }
-
-            LaharAttachment* color = lahar_window_attachment_color(winstate->window, j);
-            color->image = swap_imgs[j];
-            color->view = swap_views[j];
-        }
-
-        if (winstate->attachment_count > 1 && !lahar->gpu_allocator) {
-            err = LAHAR_ERR_INVALID_CONFIGURATION;
-            goto end;
-        }
-
-        for (size_t j = 1; j < winstate->attachment_count; j++) {
-            LaharAttachment* attachment_list = winstate->attachments[j];
-            LaharAttachmentConfig* attachment_config = &winstate->attachment_configs[j];
-
-            if (attachment_config->img_info.sType != VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO) {
-                attachment_config->img_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-            }
-
-            attachment_config->img_info.extent.width = winstate->width;
-            attachment_config->img_info.extent.height = winstate->height;
-
-            if (attachment_config->img_info.extent.depth == 0) {
-                attachment_config->img_info.extent.depth = 1;
-            }
-
-            for (size_t k = 0; k < winstate->swap_size; k++) {
-                LaharAttachment* attachment = &attachment_list[k];
-
-                LaharAllocationCreateInfo alloc_create_info = {
-                    .usage = LAHAR_MU_DEVICE_ONLY,
-                };
-
-                switch (attachment_config->role) {
-                    case LAHAR_ATTROLE_COLOR:
-                    case LAHAR_ATTROLE_USER:
-                        alloc_create_info.role = LAHAR_AR_COLOR_ATTACHMENT;
-                        break;
-                    case LAHAR_ATTROLE_DEPTH:
-                    case LAHAR_ATTROLE_STENCIL:
-                    case LAHAR_ATTROLE_DEPTH_STENCIL:
-                        alloc_create_info.role = LAHAR_AR_DEPTH_STENCIL_ATTACHMENT;
-                        break;
-                    default:
-                        break;
-                }
-
-                if ((err = lahar->gpu_allocator->alloc_image(
-                    lahar->gpu_allocator,
-                    &attachment_config->img_info,
-                    &alloc_create_info,
-                    &attachment->image,
-                    &attachment->img_allocation
-                ))) {
-                    goto end;
-                }
-
-                attachment_config->view_info.image = attachment->image;
-
-                if ((lahar->vkresult = vkCreateImageView(lahar->device, &attachment_config->view_info, lahar->vkalloc, &attachment->view))) {
-                    err = LAHAR_ERR_VK_ERR;
-                    goto end;
-                }
-            }
-        }
-
-        if (lahar->wantcommands) {
-            winstate->commands = (VkCommandBuffer*)lahar_malloc(winstate->swap_size * sizeof(VkCommandBuffer));
-
-            VkCommandBufferAllocateInfo buffer_alloc = {
-                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-                .commandPool = lahar->pool,
-                .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                .commandBufferCount = winstate->swap_size
-            };
-
-            if ((lahar->vkresult = vkAllocateCommandBuffers(lahar->device, &buffer_alloc, winstate->commands)) != VK_SUCCESS) {
-                err = LAHAR_ERR_VK_ERR;
-                goto end;
-            }
-        }
+        __lahar_init_window_swapchain(winstate, VK_NULL_HANDLE);
     }
-
-end:
-    lahar_temp_mpop();
-    return err;
-}
-
-static uint32_t __lahar_build_sync(void) {
-    uint32_t err = LAHAR_ERR_SUCCESS;
-
-    VkSemaphoreCreateInfo sem_info = {
-        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
-    };
-
-    VkFenceCreateInfo fence_info = {
-        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-        .flags = VK_FENCE_CREATE_SIGNALED_BIT
-    };
-
-    for (size_t i = 0; i < lahar->window_count; i++) {
-        LaharWindowState* winstate = &lahar->windows[i];
-
-        const uint32_t avail_ct = winstate->max_in_flight;
-        const uint32_t fin_ct = winstate->swap_size;
-        const uint32_t fence_ct = winstate->max_in_flight;
-
-        winstate->image_available = (VkSemaphore*)lahar_malloc(avail_ct * sizeof(VkSemaphore));
-        winstate->render_finished = (VkSemaphore*)lahar_malloc(fin_ct * sizeof(VkSemaphore));
-        winstate->in_flight = (VkFence*)lahar_malloc(fence_ct * sizeof(VkFence));
-
-        winstate->image_available_size = avail_ct;
-        winstate->render_finished_size = fin_ct;
-        winstate->in_flight_size = fence_ct;
-
-        lahar_trace("Window %zu had %lu fences, %lu avail sems, and %lu finished sems created", i, fence_ct, avail_ct, fence_ct);
-
-        for (size_t j = 0; j < avail_ct; j++) {
-            if ((lahar->vkresult = vkCreateSemaphore(lahar->device, &sem_info, lahar->vkalloc, &winstate->image_available[j])) != VK_SUCCESS) {
-                return LAHAR_ERR_VK_ERR;
-            }
-        }
-
-        for (size_t j = 0; j < fin_ct; j++) {
-            if ((lahar->vkresult = vkCreateSemaphore(lahar->device, &sem_info, lahar->vkalloc, &winstate->render_finished[j])) != VK_SUCCESS) {
-                return LAHAR_ERR_VK_ERR;
-            }
-        }
-
-        for (size_t j = 0; j < fence_ct; j++) {
-            if ((lahar->vkresult = vkCreateFence(lahar->device, &fence_info, lahar->vkalloc, &winstate->in_flight[j])) != VK_SUCCESS) {
-                return LAHAR_ERR_VK_ERR;
-            }
-        }
-    }
-
-    return err;
-}
-
-uint32_t lahar_build(void) {
-    uint32_t err = LAHAR_ERR_SUCCESS;
-
-    if ((err = __lahar_build_inst_extensions())) { goto end; }
-    if ((err = __lahar_build_instance())) { goto end; }
-    if ((err = __lahar_build_early_surface())) { goto end; }
-    if ((err = __lahar_build_physdev())) { goto end; }
-    if ((err = __lahar_build_device())) { goto end; }
-    if ((err = __lahar_build_swapchain())) { goto end; }
-    if ((err = __lahar_build_sync())) { goto end; }
-
 end:
     if (err) {
         lahar_deinit();
@@ -5227,6 +5240,8 @@ uint32_t lahar_window_frame_begin(LaharWindow* window) {
         return LAHAR_ERR_INVALID_FRAME_STATE;
     }
 
+    __lahar_flush_window_retire_queue(false);
+
     vkWaitForFences(lahar->device, 1, &winstate->in_flight[winstate->flight_index], VK_TRUE, UINT64_MAX);
 
     VkResult res = vkAcquireNextImageKHR(lahar->device, winstate->swapchain, UINT64_MAX, winstate->image_available[winstate->flight_index], VK_NULL_HANDLE, &winstate->frame_index);
@@ -5252,9 +5267,13 @@ uint32_t lahar_window_frame_begin(LaharWindow* window) {
         return LAHAR_ERR_VK_ERR;
     }
 
-    lahar_trace("Frame began\n\tFlight index: %lu\n\tSwap frame index: %lu", winstate->flight_index, winstate->frame_index);
+    //lahar_trace("Frame began\n\tFlight index: %lu\n\tSwap frame index: %lu", winstate->flight_index, winstate->frame_index);
 
-    vkResetFences(lahar->device, 1, &winstate->in_flight[winstate->flight_index]);
+    // Note: the in_flight fence is NOT reset here. It stays signaled until
+    // submit, so a frame abandoned between begin and submit (e.g. the window
+    // retires on OUT_OF_DATE) never leaves a forever-unsignaled fence in the
+    // retire queue. Invariant: unsignaled <=> a submit that will signal it is
+    // pending. lahar_window_submit_all resets it right before vkQueueSubmit.
     winstate->frame_phase = LAHAR_FRAME_PHASE_DRAW;
 
     return LAHAR_ERR_SUCCESS;
@@ -5283,6 +5302,10 @@ uint32_t lahar_window_submit_all(LaharWindow* window, VkCommandBuffer* cmds, uin
         .signalSemaphoreCount= 1,
         .pSignalSemaphores = &winstate->render_finished[winstate->frame_index],
     };
+
+    // Reset as late as possible: only a fence with a signal actually pending
+    // may be unsignaled. See the note in lahar_window_frame_begin.
+    vkResetFences(lahar->device, 1, &winstate->in_flight[winstate->flight_index]);
 
     if ((lahar->vkresult = vkQueueSubmit(lahar->graphicsQueue, 1, &submit_info, winstate->in_flight[winstate->flight_index])) != VK_SUCCESS) {
         return LAHAR_ERR_VK_ERR;
@@ -5384,6 +5407,29 @@ uint32_t lahar_window_present(LaharWindow* window) {
         present_info.pImageIndices = &winstate->frame_index;
     }
 
+#if defined(VK_EXT_swapchain_maintenance1)
+    VkSwapchainPresentFenceInfoEXT present_fence_info = ZINIT;
+
+    if (lahar->swapchain_maintenance1) {
+        VkFence* fence = &winstate->present_fences[winstate->frame_index];
+
+        // The spec requires the fence be unsignaled at present, and waiting
+        // here also proves this image's previous present has retired before
+        // we re-present it. Steady state it signaled long ago; this is free.
+        vkWaitForFences(lahar->device, 1, fence, VK_TRUE, UINT64_MAX);
+
+        // Same invariant as in_flight: reset only immediately before the
+        // operation that signals it, so unsignaled <=> a signal is pending.
+        vkResetFences(lahar->device, 1, fence);
+
+        present_fence_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT;
+        present_fence_info.swapchainCount = 1;
+        present_fence_info.pFences = fence;
+
+        present_info.pNext = &present_fence_info;
+    }
+#endif
+
     lahar->vkresult = vkQueuePresentKHR(lahar->presentQueue, &present_info);
 
     // The frame is over either way: the command buffers were already submitted,
@@ -5393,9 +5439,7 @@ uint32_t lahar_window_present(LaharWindow* window) {
     winstate->frame_phase = LAHAR_FRAME_PHASE_BEGIN;
 
     // SUBOPTIMAL means the image *was* presented, just not ideally for the
-    // surface any more. OUT_OF_DATE means it wasn't. Both are "the swapchain
-    // needs recreating", which is routine (any resize), not an error, so they
-    // get the same treatment frame_begin already gives them.
+    // surface any more. OUT_OF_DATE means it wasn't.
     if (lahar->vkresult == VK_SUBOPTIMAL_KHR || lahar->vkresult == VK_ERROR_OUT_OF_DATE_KHR) {
         lahar_trace("Presented, swapchain out of date");
 
@@ -9705,8 +9749,6 @@ static void __lahar_fl_validate_chunk(LaharFreelistMemChunk* chunk) {
         bool had_any = false;
 
         for(uint32_t sl = 0; sl < LAHAR_FREELIST_SL_COUNT; sl++) {
-            LaharFreelistSubAllocation* list = chunk->bins[fl][sl];
-
             bool has_list = chunk->bins[fl][sl] != NULL;
             bool has_bit  = (chunk->subbin_bitmap[fl] & (1u << sl)) != 0;
 

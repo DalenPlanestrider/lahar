@@ -31,6 +31,7 @@ int main() {
         return 1;
     }
 
+    lahar_builder_set_debug_level(LAHAR_DEBUG_TRACE);
     lahar_builder_request_validation_layers();
 
     GLFWwindow* window = glfwCreateWindow(800, 600, "Test", NULL, NULL);
@@ -41,7 +42,7 @@ int main() {
 
     glfwSetWindowSizeCallback(window, window_resize);
 
-    // Window management is optional, you can use lahar like a vk-bootstrap/volk replacement alone, if desired 
+    // Window management is optional, you can use lahar like a vk-bootstrap/volk replacement alone, if desired
     // Also, the window you use is up to you. Native support for glfw and sdl3. Plus an api for defining custom
     // windows if you're rolling your own
     if ((err = lahar_builder_window_register(window, LAHAR_WINPROF_COLOR))) {
@@ -57,6 +58,10 @@ int main() {
         printf("Lahar failed to append required extension: %s\n", lahar_err_name(err));
         return 1;
     }
+
+    err = lahar_builder_extension_add_required_device(
+        VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME
+    );
 
     // Opt into having lahar make a primary buffer per swapchain image
     // You can make your own after build, if you prefer
@@ -75,7 +80,9 @@ int main() {
 
     // The window state contains anything specific to the window, such
     // as attachments, the swapchain, the index of the current frame, and so on
-    const LaharWindowState* winstate = lahar_window_state(window);
+    LaharWindowState* winstate = lahar_window_state(window);
+
+    winstate->queued_destruction = true;
 
     /* Optional pipeline setup utilities are available */
     if ((err = create_pipeline(window))) {
@@ -170,8 +177,8 @@ int main() {
 uint32_t create_pipeline(LaharWindow* window) {
     /* Shaders work via builder. They default to sane values,
      * and have an API for easy settings, like quickly setting
-     * dynamic values, culling, or blend modes, for example. 
-     * You can also pass VkPiplineLayoutCreate values directly, 
+     * dynamic values, culling, or blend modes, for example.
+     * You can also pass VkPiplineLayoutCreate values directly,
      * if need be. There's hooks to handle compilation if you'd
      * like to suport non-spirv languages.
      *

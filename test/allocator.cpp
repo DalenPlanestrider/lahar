@@ -321,10 +321,20 @@ static bool test_gpu_copy_roundtrip(void) {
     tassert_ok(A()->flush(A(), src_alloc, 0, VK_WHOLE_SIZE), "src flush failed");
     tassert_ok(A()->unmap(A(), src_alloc), "src unmap failed");
 
-    /* Copy on the GPU. The command pool exists because we requested it pre-build */
+    /* Copy on the GPU. Command pools are per-window state now and we run
+     * headless, so the test owns a transient pool of its own. */
+    VkCommandPoolCreateInfo pool_info = {};
+    pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    pool_info.queueFamilyIndex = lahar->physdev_info.graphics_queue_index;
+
+    VkCommandPool pool = VK_NULL_HANDLE;
+    tassert(vkCreateCommandPool(lahar->device, &pool_info, lahar->vkalloc, &pool) == VK_SUCCESS,
+        "command pool creation failed");
+
     VkCommandBufferAllocateInfo cmd_info = {};
     cmd_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    cmd_info.commandPool = lahar->pool;
+    cmd_info.commandPool = pool;
     cmd_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cmd_info.commandBufferCount = 1;
 
@@ -347,7 +357,7 @@ static bool test_gpu_copy_roundtrip(void) {
 
     tassert(vkQueueSubmit(lahar->graphicsQueue, 1, &submit, VK_NULL_HANDLE) == VK_SUCCESS, "queue submit failed");
     vkQueueWaitIdle(lahar->graphicsQueue);
-    vkFreeCommandBuffers(lahar->device, lahar->pool, 1, &cmd);
+    vkDestroyCommandPool(lahar->device, pool, lahar->vkalloc);
 
     /* Read it back and verify */
     mapped = NULL;
@@ -815,9 +825,6 @@ int main(void) {
 
     /* Warn level so leak reports are visible in the output */
     lahar_builder_set_debug_level(LAHAR_DEBUG_WARNING);
-
-    /* Headless: no windows, but we want a command pool for the copy test */
-    lahar_builder_request_command_buffers();
 
 #ifdef LAHAR_TEST_FREELIST
     custom_allocator = lahar_allocator_freelist_init();
