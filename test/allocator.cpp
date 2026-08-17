@@ -24,7 +24,6 @@
 /* Enable lahar's internal invariant assertions and the freelist's
  * whole-heap validator. Must precede the lahar.h include: LAHAR_ASSERT is
  * fixed at that point. */
-#define LAHAR_DEBUG
 
 #define LAHAR_USE_VMA
 #define VMA_IMPLEMENTATION

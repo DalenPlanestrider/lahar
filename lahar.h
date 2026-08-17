@@ -536,6 +536,7 @@ struct Lahar {
     bool wantcommands;                                      // True if the window command buffers were requested
     bool dynamic_rendering;                                 // True if dynamic rendering is available AND enabled, whether via the extension or 1.3 core. Only valid after build
     bool swapchain_maintenance1;                            // True if the swapchain_maintenance1 feature is enabled (extension + feature bit). Only valid after build
+    bool timeline_semaphores;                               // True if timeline semaphores are available AND enabled, whether via the extension or 1.2 core. Only valid after build
     VkAllocationCallbacks* vkalloc;                         // One can set the vulkan CPU allocator, if one desires
     PFN_vkDebugUtilsMessengerCallbackEXT debug_callback;    // One can set the debug messenger callback, if one desires
     void* user_data;                                        // A user supplied pointer
@@ -559,6 +560,8 @@ struct Lahar {
     VkDevice device;
     VkQueue graphicsQueue;
     VkQueue presentQueue;
+    VkSemaphore timeline;                                   // A device-wide timeline semaphore. VK_NULL_HANDLE unless lahar->timeline_semaphores resolved true at build
+    uint64_t timeline_value;                                // The last value submitted to signal on the timeline semaphore. Each lahar_window_submit* ticks this by one; when the GPU catches up, the semaphore's counter reaches it. Use it to stamp asset lifetimes
 
     LaharWindowState* windows;
     size_t window_count, window_cap;
@@ -578,6 +581,10 @@ struct Lahar {
         bool* opt_dev_exts_present;
         size_t ode_count, ode_cap;
     } extensions;
+
+    struct {
+        uint64_t forced_retire_flushes;
+    } stats;
 
     #if defined(LAHAR_USE_VMA)
     VmaAllocator vma;
@@ -1530,7 +1537,7 @@ uint32_t lahar_memory_read(LaharAllocation alloc, uint64_t offset, void* data, u
 
 extern Lahar __lahar_instance;
 extern Lahar* lahar;
-#define LAHAR_VERSION VK_MAKE_VERSION(4, 2, 0)
+#define LAHAR_VERSION VK_MAKE_VERSION(4, 3, 0)
 
 #if defined(__cplusplus) && defined(LAHAR_C_LINKAGE)
 }
@@ -3429,7 +3436,7 @@ static uint32_t __lahar_init_window_swapchain(LaharWindowState* winstate, VkSwap
             goto end;
         }
 
-        winstate->commands = (VkCommandBuffer*)lahar_malloc(winstate->swap_size * sizeof(VkCommandBuffer));
+        winstate->commands = (VkCommandBuffer*)lahar_malloc(winstate->max_in_flight * sizeof(VkCommandBuffer));
 
         VkCommandBufferAllocateInfo buffer_alloc = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
@@ -3613,6 +3620,11 @@ static bool __lahar_window_retire_reclaimable(const LaharWindowState* entry) {
  * presents can remain). Unreclaimable entries stay queued either way. */
 static void __lahar_flush_window_retire_queue(bool force) {
     if (lahar->window_retire_count == 0) { return; }
+
+    if (force) {
+        lahar->stats.forced_retire_flushes++;
+        lahar_trace("Forced a retire queue flush");
+    }
 
     if (force && vkDeviceWaitIdle) {
         vkDeviceWaitIdle(lahar->device);
@@ -4487,7 +4499,7 @@ uint32_t lahar_builder_window_register(LaharWindow* window, LaharWindowProfile w
                     .role = LAHAR_ATTROLE_DEPTH_STENCIL,
                     .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                     .description = {
-                        .format = VK_FORMAT_D32_SFLOAT,
+                        .format = VK_FORMAT_D32_SFLOAT_S8_UINT,
                         .samples = VK_SAMPLE_COUNT_1_BIT,
                         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
                         .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
@@ -4499,7 +4511,7 @@ uint32_t lahar_builder_window_register(LaharWindow* window, LaharWindowProfile w
                     .img_info = {
                         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                         .imageType = VK_IMAGE_TYPE_2D,
-                        .format = VK_FORMAT_D32_SFLOAT,
+                        .format = VK_FORMAT_D32_SFLOAT_S8_UINT,
                         .mipLevels = 1,
                         .arrayLayers = 1,
                         .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -4511,9 +4523,9 @@ uint32_t lahar_builder_window_register(LaharWindow* window, LaharWindowProfile w
                     .view_info = {
                         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                         .viewType = VK_IMAGE_VIEW_TYPE_2D,
-                        .format = VK_FORMAT_D32_SFLOAT,
+                        .format = VK_FORMAT_D32_SFLOAT_S8_UINT,
                         .subresourceRange = {
-                            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+                            .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
                             .baseMipLevel = 0,
                             .levelCount = 1,
                             .baseArrayLayer = 0,
@@ -4615,6 +4627,10 @@ void lahar_deinit(void) {
         lahar_allocator_freelist_deinit(lahar->gpu_allocator);
     }
     #endif
+
+    if (lahar->timeline != VK_NULL_HANDLE && vkDestroySemaphore) {
+        vkDestroySemaphore(lahar->device, lahar->timeline, lahar->vkalloc);
+    }
 
     if (lahar->device != VK_NULL_HANDLE && vkDestroyDevice) {
         vkDestroyDevice(lahar->device, lahar->vkalloc);
@@ -5004,6 +5020,263 @@ end:
     return err;
 }
 
+/* Feature resolution helpers for __lahar_build_device. Each one resolves an
+ * optional feature that can arrive multiple ways (an extension, a core
+ * version's feature bit, and/or a standalone feature struct) into its
+ * lahar->* flag, injecting the feature struct into *pnext when the user asked
+ * for the extension but didn't chain one themselves.
+ *
+ * Injected structs are lahar_temp_alloc'd, which deliberately crosses the
+ * function boundary: the caller's temp frame (mcheck/mpop) owns them, so they
+ * stay alive through vkCreateDevice. A little gross, but it keeps the ifdef
+ * soup out of __lahar_build_device.
+ *
+ * When the headers are too old to know about a feature, the helper compiles
+ * down to a no-op and the flag stays false. */
+
+static uint32_t __lahar_resolve_dynamic_rendering(void** pnext) {
+#if defined(VK_VERSION_1_3) || defined(VK_KHR_dynamic_rendering)
+    /* Dynamic rendering can arrive three ways: the KHR extension, the 1.3 core
+     * feature bit via VkPhysicalDeviceVulkan13Features, or the standalone
+     * feature struct. Resolve all of them here into lahar->dynamic_rendering so
+     * that nothing downstream has to re-derive it (and so that nothing
+     * downstream gets it wrong by only checking the extension). */
+
+    #if defined(VK_VERSION_1_3)
+    const VkPhysicalDeviceDynamicRenderingFeatures* dyn_feature =
+    (const VkPhysicalDeviceDynamicRenderingFeatures*)__lahar_pnext_fetch(*pnext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES);
+
+    const VkPhysicalDeviceVulkan13Features* vk13_feature =
+    (const VkPhysicalDeviceVulkan13Features*)__lahar_pnext_fetch(*pnext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES);
+    #else
+    const VkPhysicalDeviceDynamicRenderingFeaturesKHR* dyn_feature =
+    (const VkPhysicalDeviceDynamicRenderingFeaturesKHR*)__lahar_pnext_fetch(*pnext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR);
+    #endif
+
+    bool has_ext = false;
+    #if defined(VK_KHR_dynamic_rendering)
+    has_ext = lahar_extension_has_device(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+    #endif
+    const bool is_1_3 = VK_API_VERSION_MINOR(lahar->vkversion) >= 3;
+
+    if (has_ext) {
+        #if defined(VK_VERSION_1_3)
+        if (vk13_feature) {
+            if (!vk13_feature->dynamicRendering) {
+                lahar_error("The dynamic rendering extension is enabled, and you passed a Vulkan 1.3 features, but without dynamic rendering on");
+                return LAHAR_ERR_INVALID_CONFIGURATION;
+            }
+
+            lahar->dynamic_rendering = true;
+        }
+        else
+        #endif
+        if (!dyn_feature) {
+            #if defined(VK_VERSION_1_3)
+            VkPhysicalDeviceDynamicRenderingFeatures* feature =
+            (VkPhysicalDeviceDynamicRenderingFeatures*)lahar_temp_alloc(sizeof(VkPhysicalDeviceDynamicRenderingFeatures));
+            feature->sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES;
+            #else
+            VkPhysicalDeviceDynamicRenderingFeaturesKHR* feature =
+            (VkPhysicalDeviceDynamicRenderingFeaturesKHR*)lahar_temp_alloc(sizeof(VkPhysicalDeviceDynamicRenderingFeaturesKHR));
+            feature->sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
+            #endif
+            feature->dynamicRendering = VK_TRUE;
+            feature->pNext = *pnext;
+            *pnext = (void*)feature;
+            lahar->dynamic_rendering = true;
+        }
+        else {
+            // User supplied the struct themselves, respect their bit
+            lahar->dynamic_rendering = dyn_feature->dynamicRendering == VK_TRUE;
+        }
+    }
+    else if (is_1_3) {
+        // Core in 1.3, but the feature still has to be switched on. We do not
+        // inject it here: the user did not ask for the extension, so opting
+        // them into the feature would be a surprise.
+        #if defined(VK_VERSION_1_3)
+        if (vk13_feature) {
+            lahar->dynamic_rendering = vk13_feature->dynamicRendering == VK_TRUE;
+        }
+        else
+        #endif
+        if (dyn_feature) {
+            lahar->dynamic_rendering = dyn_feature->dynamicRendering == VK_TRUE;
+        }
+    }
+#else
+    (void)pnext;
+#endif
+
+    if (lahar->dynamic_rendering) {
+        lahar_info("Dynamic rendering is enabled");
+    }
+    else {
+        lahar_info("Dynamic rendering is NOT enabled, render passes are required");
+    }
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+static uint32_t __lahar_resolve_timeline_semaphores(void** pnext) {
+#if defined(VK_VERSION_1_2) || defined(VK_KHR_timeline_semaphore)
+    /* Timeline semaphores get the same treatment as dynamic rendering, except
+     * they went core in 1.2 rather than 1.3: the KHR extension, the 1.2 core
+     * feature bit via VkPhysicalDeviceVulkan12Features, or the standalone
+     * feature struct. Resolve all of them into lahar->timeline_semaphores. */
+
+    #if defined(VK_VERSION_1_2)
+    const VkPhysicalDeviceTimelineSemaphoreFeatures* tls_feature =
+    (const VkPhysicalDeviceTimelineSemaphoreFeatures*)__lahar_pnext_fetch(*pnext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES);
+
+    const VkPhysicalDeviceVulkan12Features* vk12_feature =
+    (const VkPhysicalDeviceVulkan12Features*)__lahar_pnext_fetch(*pnext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES);
+    #else
+    const VkPhysicalDeviceTimelineSemaphoreFeaturesKHR* tls_feature =
+    (const VkPhysicalDeviceTimelineSemaphoreFeaturesKHR*)__lahar_pnext_fetch(*pnext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES_KHR);
+    #endif
+
+    bool has_ext = false;
+    #if defined(VK_KHR_timeline_semaphore)
+    has_ext = lahar_extension_has_device(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
+    #endif
+    const bool is_1_2 = VK_API_VERSION_MINOR(lahar->vkversion) >= 2;
+
+    if (has_ext) {
+        #if defined(VK_VERSION_1_2)
+        if (vk12_feature) {
+            if (!vk12_feature->timelineSemaphore) {
+                lahar_error("The timeline semaphore extension is enabled, and you passed a Vulkan 1.2 features, but without timeline semaphores on");
+                return LAHAR_ERR_INVALID_CONFIGURATION;
+            }
+
+            lahar->timeline_semaphores = true;
+        }
+        else
+        #endif
+        if (!tls_feature) {
+            #if defined(VK_VERSION_1_2)
+            VkPhysicalDeviceTimelineSemaphoreFeatures* feature =
+            (VkPhysicalDeviceTimelineSemaphoreFeatures*)lahar_temp_alloc(sizeof(VkPhysicalDeviceTimelineSemaphoreFeatures));
+            feature->sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
+            #else
+            VkPhysicalDeviceTimelineSemaphoreFeaturesKHR* feature =
+            (VkPhysicalDeviceTimelineSemaphoreFeaturesKHR*)lahar_temp_alloc(sizeof(VkPhysicalDeviceTimelineSemaphoreFeaturesKHR));
+            feature->sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES_KHR;
+            #endif
+            feature->timelineSemaphore = VK_TRUE;
+            feature->pNext = *pnext;
+            *pnext = (void*)feature;
+            lahar->timeline_semaphores = true;
+        }
+        else {
+            // User supplied the struct themselves, respect their bit
+            lahar->timeline_semaphores = tls_feature->timelineSemaphore == VK_TRUE;
+        }
+    }
+    else if (is_1_2) {
+        // Core in 1.2, but the feature still has to be switched on. We do not
+        // inject it here: the user did not ask for the extension, so opting
+        // them into the feature would be a surprise.
+        #if defined(VK_VERSION_1_2)
+        if (vk12_feature) {
+            lahar->timeline_semaphores = vk12_feature->timelineSemaphore == VK_TRUE;
+        }
+        else
+        #endif
+        if (tls_feature) {
+            lahar->timeline_semaphores = tls_feature->timelineSemaphore == VK_TRUE;
+        }
+    }
+#else
+    (void)pnext;
+#endif
+
+    if (lahar->timeline_semaphores) {
+        lahar_info("Timeline semaphores are enabled");
+    }
+    else {
+        lahar_info("Timeline semaphores are NOT enabled");
+    }
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+static uint32_t __lahar_resolve_swapchain_maintenance1(void** pnext) {
+#if defined(VK_EXT_swapchain_maintenance1)
+    /* Same resolution as dynamic rendering: extension requested + feature
+     * struct chained (injected if the user didn't). Never core, so no
+     * version path. */
+
+    const VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT* maint_feature =
+    (const VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT*)__lahar_pnext_fetch(*pnext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT);
+
+    bool has_ext = lahar_extension_has_device(VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
+    #if defined(VK_KHR_swapchain_maintenance1)
+    has_ext = has_ext || lahar_extension_has_device(VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
+    #endif
+
+    if (has_ext) {
+        if (!maint_feature) {
+            VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT* feature =
+            (VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT*)lahar_temp_alloc(sizeof(VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT));
+            feature->sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT;
+            feature->swapchainMaintenance1 = VK_TRUE;
+            feature->pNext = *pnext;
+            *pnext = (void*)feature;
+            lahar->swapchain_maintenance1 = true;
+        }
+        else {
+            // User supplied the struct themselves, respect their bit
+            lahar->swapchain_maintenance1 = maint_feature->swapchainMaintenance1 == VK_TRUE;
+        }
+    }
+
+    if (lahar->swapchain_maintenance1) {
+        lahar_info("Swapchain maintenance1 is enabled, retired swapchains reclaim via present fences");
+    }
+#else
+    (void)pnext;
+#endif
+
+    return LAHAR_ERR_SUCCESS;
+}
+
+/* Create lahar->timeline if timeline semaphores resolved on. Must run after
+ * device creation + function loading. No-op when the feature is off or the
+ * headers are too old to know about it. */
+static uint32_t __lahar_create_timeline_semaphore(void) {
+#if defined(VK_VERSION_1_2) || defined(VK_KHR_timeline_semaphore)
+    if (!lahar->timeline_semaphores) { return LAHAR_ERR_SUCCESS; }
+
+    #if defined(VK_VERSION_1_2)
+    VkSemaphoreTypeCreateInfo timeline_type_info = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+        .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+        .initialValue = 0,
+    };
+    #else
+    VkSemaphoreTypeCreateInfoKHR timeline_type_info = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO_KHR,
+        .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE_KHR,
+        .initialValue = 0,
+    };
+    #endif
+
+    VkSemaphoreCreateInfo timeline_info = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+        .pNext = &timeline_type_info,
+    };
+
+    if ((lahar->vkresult = vkCreateSemaphore(lahar->device, &timeline_info, lahar->vkalloc, &lahar->timeline)) != VK_SUCCESS) {
+        return LAHAR_ERR_VK_ERR;
+    }
+#endif
+
+    return LAHAR_ERR_SUCCESS;
+}
+
 static uint32_t __lahar_build_device(void) {
     uint32_t err = LAHAR_ERR_SUCCESS;
     lahar_temp_mcheck();
@@ -5051,106 +5324,14 @@ static uint32_t __lahar_build_device(void) {
     const uint32_t enabled_layer_count = has_dbg_layer ? 1 : 0;
 
 
-    // User supplied pnext, might be NULL
+    // User supplied pnext, might be NULL. The resolvers may prepend
+    // temp-alloc'd feature structs to this chain; those live in our temp frame
+    // and survive until the mpop at end.
     void* pnext = lahar->device_create_pnext;
 
-    VkPhysicalDeviceDynamicRenderingFeatures dynamic_rendering_feature = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES,
-        .dynamicRendering = VK_TRUE
-    };
-
-#if defined(VK_EXT_swapchain_maintenance1)
-    VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT swap_maint1_feature = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT,
-        .swapchainMaintenance1 = VK_TRUE
-    };
-#endif
-
-    /* Dynamic rendering can arrive three ways: the KHR extension, the 1.3 core
-     * feature bit via VkPhysicalDeviceVulkan13Features, or the standalone
-     * feature struct. Resolve all of them here into lahar->dynamic_rendering so
-     * that nothing downstream has to re-derive it (and so that nothing
-     * downstream gets it wrong by only checking the extension). */
-    {
-        const VkPhysicalDeviceDynamicRenderingFeatures* dyn_feature =
-        (const VkPhysicalDeviceDynamicRenderingFeatures* )__lahar_pnext_fetch(pnext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES);
-
-        const VkPhysicalDeviceVulkan13Features* vk13_feature =
-        (const VkPhysicalDeviceVulkan13Features* )__lahar_pnext_fetch(pnext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES);
-
-        const bool has_ext = lahar_extension_has_device(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
-        const bool is_1_3 = VK_API_VERSION_MINOR(lahar->vkversion) >= 3;
-
-        if (has_ext) {
-            if (vk13_feature) {
-                if (!vk13_feature->dynamicRendering) {
-                    lahar_error("The dynamic rendering extension is enabled, and you passed a Vulkan 1.3 features, but without dynamic rendering on");
-                    err = LAHAR_ERR_INVALID_CONFIGURATION;
-                    goto end;
-                }
-
-                lahar->dynamic_rendering = true;
-            }
-            else if (!dyn_feature) {
-                dynamic_rendering_feature.pNext = pnext;
-                pnext = (void*)&dynamic_rendering_feature;
-                lahar->dynamic_rendering = true;
-            }
-            else {
-                // User supplied the struct themselves, respect their bit
-                lahar->dynamic_rendering = dyn_feature->dynamicRendering == VK_TRUE;
-            }
-        }
-        else if (is_1_3) {
-            // Core in 1.3, but the feature still has to be switched on. We do not
-            // inject it here: the user did not ask for the extension, so opting
-            // them into the feature would be a surprise.
-            if (vk13_feature) {
-                lahar->dynamic_rendering = vk13_feature->dynamicRendering == VK_TRUE;
-            }
-            else if (dyn_feature) {
-                lahar->dynamic_rendering = dyn_feature->dynamicRendering == VK_TRUE;
-            }
-        }
-
-        if (lahar->dynamic_rendering) {
-            lahar_info("Dynamic rendering is enabled");
-        }
-        else {
-            lahar_info("Dynamic rendering is NOT enabled, render passes are required");
-        }
-    }
-
-#if defined(VK_EXT_swapchain_maintenance1)
-    /* Same resolution as dynamic rendering: extension requested + feature
-     * struct chained (injected if the user didn't). Never core, so no
-     * version path. */
-    {
-        const VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT* maint_feature =
-        (const VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT*)__lahar_pnext_fetch(pnext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT);
-
-        bool has_ext = lahar_extension_has_device(VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
-        #if defined(VK_KHR_swapchain_maintenance1)
-        has_ext = has_ext || lahar_extension_has_device(VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
-        #endif
-
-        if (has_ext) {
-            if (!maint_feature) {
-                swap_maint1_feature.pNext = pnext;
-                pnext = (void*)&swap_maint1_feature;
-                lahar->swapchain_maintenance1 = true;
-            }
-            else {
-                // User supplied the struct themselves, respect their bit
-                lahar->swapchain_maintenance1 = maint_feature->swapchainMaintenance1 == VK_TRUE;
-            }
-        }
-
-        if (lahar->swapchain_maintenance1) {
-            lahar_info("Swapchain maintenance1 is enabled, retired swapchains reclaim via present fences");
-        }
-    }
-#endif
+    if ((err = __lahar_resolve_dynamic_rendering(&pnext))) { goto end; }
+    if ((err = __lahar_resolve_timeline_semaphores(&pnext))) { goto end; }
+    if ((err = __lahar_resolve_swapchain_maintenance1(&pnext))) { goto end; }
 
     device_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     device_create_info.pNext = pnext;
@@ -5172,6 +5353,8 @@ static uint32_t __lahar_build_device(void) {
 
     vkGetDeviceQueue(lahar->device, lahar->physdev_info.graphics_queue_index, 0, &lahar->graphicsQueue);
     vkGetDeviceQueue(lahar->device, lahar->physdev_info.present_queue_index, 0, &lahar->presentQueue);
+
+    if ((err = __lahar_create_timeline_semaphore())) { goto end; }
 
 end:
     lahar_temp_mpop();
@@ -5246,7 +5429,7 @@ uint32_t lahar_window_frame_begin(LaharWindow* window) {
 
     VkResult res = vkAcquireNextImageKHR(lahar->device, winstate->swapchain, UINT64_MAX, winstate->image_available[winstate->flight_index], VK_NULL_HANDLE, &winstate->frame_index);
 
-    if (res == VK_SUBOPTIMAL_KHR || res == VK_ERROR_OUT_OF_DATE_KHR) {
+    if (res == VK_ERROR_OUT_OF_DATE_KHR) {
         lahar_trace("Attempted to begin frame, out of date");
 
         if (winstate->auto_recreate_swap) {
@@ -5262,10 +5445,11 @@ uint32_t lahar_window_frame_begin(LaharWindow* window) {
             return LAHAR_ERR_SWAPCHAIN_OUT_OF_DATE;
         }
     }
-    else if (res != VK_SUCCESS) {
+    else if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {
         lahar->vkresult = res;
         return LAHAR_ERR_VK_ERR;
     }
+    // SUBOPTIMAL: draw and present this frame normally; present will report SUBOPTIMAL too and recreate on the way out
 
     //lahar_trace("Frame began\n\tFlight index: %lu\n\tSwap frame index: %lu", winstate->flight_index, winstate->frame_index);
 
@@ -5292,6 +5476,11 @@ uint32_t lahar_window_submit_all(LaharWindow* window, VkCommandBuffer* cmds, uin
 
     VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
 
+    VkSemaphore signal_semaphores[2] = {
+        winstate->render_finished[winstate->frame_index],
+        VK_NULL_HANDLE, // lahar->timeline, when enabled
+    };
+
     VkSubmitInfo submit_info = {
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .waitSemaphoreCount = 1,
@@ -5300,8 +5489,35 @@ uint32_t lahar_window_submit_all(LaharWindow* window, VkCommandBuffer* cmds, uin
         .commandBufferCount = cmd_count,
         .pCommandBuffers = cmds,
         .signalSemaphoreCount= 1,
-        .pSignalSemaphores = &winstate->render_finished[winstate->frame_index],
+        .pSignalSemaphores = signal_semaphores,
     };
+
+#if defined(VK_VERSION_1_2) || defined(VK_KHR_timeline_semaphore)
+    /* When the device-wide timeline semaphore exists, every submit signals it
+     * with the next tick. Values must be provided for ALL signal semaphores;
+     * the binary render_finished slot's value is ignored per spec. */
+    uint64_t signal_values[2] = { 0, lahar->timeline_value + 1 };
+
+    #if defined(VK_VERSION_1_2)
+    VkTimelineSemaphoreSubmitInfo timeline_submit_info = {
+        .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+        .signalSemaphoreValueCount = 2,
+        .pSignalSemaphoreValues = signal_values,
+    };
+    #else
+    VkTimelineSemaphoreSubmitInfoKHR timeline_submit_info = {
+        .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO_KHR,
+        .signalSemaphoreValueCount = 2,
+        .pSignalSemaphoreValues = signal_values,
+    };
+    #endif
+
+    if (lahar->timeline != VK_NULL_HANDLE) {
+        signal_semaphores[1] = lahar->timeline;
+        submit_info.signalSemaphoreCount = 2;
+        submit_info.pNext = &timeline_submit_info;
+    }
+#endif
 
     // Reset as late as possible: only a fence with a signal actually pending
     // may be unsignaled. See the note in lahar_window_frame_begin.
@@ -5309,6 +5525,12 @@ uint32_t lahar_window_submit_all(LaharWindow* window, VkCommandBuffer* cmds, uin
 
     if ((lahar->vkresult = vkQueueSubmit(lahar->graphicsQueue, 1, &submit_info, winstate->in_flight[winstate->flight_index])) != VK_SUCCESS) {
         return LAHAR_ERR_VK_ERR;
+    }
+
+    // Only tick after the submit actually went through; a failed submit
+    // signals nothing, and the counter must never run ahead of reality
+    if (lahar->timeline != VK_NULL_HANDLE) {
+        lahar->timeline_value++;
     }
 
     winstate->frame_phase = LAHAR_FRAME_PHASE_PRESENT;
@@ -5438,8 +5660,7 @@ uint32_t lahar_window_present(LaharWindow* window) {
     winstate->flight_index = (winstate->flight_index + 1) % winstate->max_in_flight;
     winstate->frame_phase = LAHAR_FRAME_PHASE_BEGIN;
 
-    // SUBOPTIMAL means the image *was* presented, just not ideally for the
-    // surface any more. OUT_OF_DATE means it wasn't.
+    // SUBOPTIMAL means the image *was* presented, just not ideally for the surface any more. OUT_OF_DATE means it wasn't.
     if (lahar->vkresult == VK_SUBOPTIMAL_KHR || lahar->vkresult == VK_ERROR_OUT_OF_DATE_KHR) {
         lahar_trace("Presented, swapchain out of date");
 
@@ -5468,7 +5689,7 @@ VkCommandBuffer lahar_window_command_buffer(LaharWindow* window) {
     // NULL unless lahar_builder_request_command_buffers() was called
     if (!state->commands) { return VK_NULL_HANDLE; }
 
-    return state->commands[state->frame_index];
+    return state->commands[state->flight_index];
 }
 
 
@@ -5555,7 +5776,7 @@ uint32_t lahar_cmd_attachment_transition(VkCommandBuffer cmd, LaharWindow* windo
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .image = attachment->image,
             .subresourceRange = {
-                .aspectMask = __lahar_aspect_mask_from_usage(conf->usage, winstate->surface_format.format),
+                .aspectMask = __lahar_aspect_mask_from_usage(conf->usage, conf->img_info.format),
                 .baseMipLevel = 0,
                 .levelCount = 1,
                 .baseArrayLayer = 0,
